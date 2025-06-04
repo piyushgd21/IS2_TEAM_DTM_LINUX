@@ -1,25 +1,50 @@
-﻿#include "../header/featureExtraction.h"
+﻿/**
+ * @file featureExtraction.cpp
+ * @brief Core logic for extracting LiDAR features (corners, surfaces) from point clouds.
+ * 
+ * This file handles sharp corner detection, flat surface detection, downsampling,
+ * filtering, and exporting features for SLAM or mapping purposes.
+ */
+#include "../header/featureExtraction.h"
 #include "../header/optimization.h"
 #include <filesystem>
+
+// ========== Global Variables ==========
+
+// Pointer to curvature buffer used in sorting
 float *mpCurv;
+
+// Sorting comparator for curvature values
 bool comp(int i, int j) { return (mpCurv[i] < mpCurv[j]); }
+
+// Global scan and file counters
 int ScanCount = 0;
 int SubFile = 1;
+
+// Buffers for rotation/translation states from previous scans
 vector<Eigen::Matrix3d> lastR;
 vector<Eigen::Vector3d> lastr;
 vector<Eigen::Matrix3d> lastRefR;
 vector<Eigen::Vector3d> lastRefr;
 vector<double> refT;
 
+// Flag and value for continuity in ground height tracking
 bool previous_ground_info_flag = false;
 float ground_height_previous;
-Eigen::Matrix3f R_lu_lup_previous;   
+Eigen::Matrix3f R_lu_lup_previous;
+
+// Counter for failed odometry tracking attempts
 int successive_odometry_failure_count  = 0;
 
 /* Load data from current scan, fill mpLaserCloud
 Inputs:
     1. file name for point cloud, 2. scan ID, 3. pointer to tracked scan (Null or tracked), 4.ID for tracking sub maps, 5. initTime, 6, duration of a scan,
     7. setting struct, 8. pointer to reference trajectory (Null), 9. pointer to map thread (Null)
+ */
+// ========== Destructor ==========
+
+/**
+ * @brief Destructor for LidarScan - releases memory and resets global buffers.
  */
 LidarScan::~LidarScan() {
 	mpSurfPointsFlatGround.reset();
@@ -41,6 +66,22 @@ LidarScan::~LidarScan() {
 	successive_odometry_failure_count = 0;
 };
 
+/**
+ * @brief Constructor for LidarScan that handles scan data loading, initialization, and odometry estimation.
+ *
+ * @param lidar_data_path       Path to raw binary scan file.
+ * @param index                 Scan ID.
+ * @param pPrev                 Pointer to previous scan (nullptr for first).
+ * @param partID                Submap ID.
+ * @param timetag               Scan start time.
+ * @param duration              Scan duration.
+ * @param setting               User-specified SLAM and extraction settings.
+ * @param single_scan_tree_file Optional: Tree feature file.
+ * @param single_scan_ground_file Optional: Ground feature file.
+ * @param points_number         Total number of LiDAR points.
+ * @param pTraj                 Pointer to ground truth trajectory.
+ * @param pMap                  Pointer to mapping thread logic.
+ */
 LidarScan::LidarScan(const std::string lidar_data_path, int index, LidarScan *pPrev, int partID, double timetag, double duration, SettingPara setting,
 	std::string single_scan_tree_file, std::string single_scan_ground_file, int points_number, CTrajectory *pTraj, Mapping *pMap)
     : id(index), mPara(setting), mpPrev(pPrev), mPartID(partID), mTimeInit(timetag), mScanDuration(duration),
@@ -59,6 +100,7 @@ LidarScan::LidarScan(const std::string lidar_data_path, int index, LidarScan *pP
 
     mTimeEnd = mTimeInit + mScanDuration;
 
+    // Trajectory interpolation for initial pose
     int gnss_idx = -1;
     if (!(mpTraj->eopInterpolation(timetag / 1000.0, -1, gnss_idx, r_lu_m_t_ini_, R_lu_m_t_ini_)))
     {
@@ -81,8 +123,11 @@ LidarScan::LidarScan(const std::string lidar_data_path, int index, LidarScan *pP
         // t_end - t_end_prev
         mTimeTracking = mTimeEnd - mpPrev->mTimeEnd;
         float s = mTimeTracking / mpPrev->mTimeTracking;
+
         //(TODO:slerp is only for interpolation)
         Eigen::Quaterniond qPrev(mpPrev->R_lut2_lut1);
+
+        // Estimate rotation and translation via SLERP
         q_ini = Eigen::Quaterniond::Identity().slerp(double(s), qPrev);
         t_ini = double(s) * mpPrev->r_lut2_lut1;
 
@@ -277,6 +322,15 @@ LidarScan::LidarScan(const std::string lidar_data_path, int index, LidarScan *pP
 }
 
 /*Main function for the feature based odometry */
+/**
+ * @brief Performs feature-based odometry estimation.
+ *
+ * This function handles both leveled and non-leveled cases. It extracts ground and tree features,
+ * estimates relative transformation using geometric constraints, and matches with previous scan.
+ *
+ * @return true if successful, false otherwise.
+ */
+
 bool LidarScan::conduct_feature_based_odo()
 {
     fLog << "-- Conduct feature-based odometry" <<endl;
@@ -462,6 +516,13 @@ bool LidarScan::conduct_feature_based_odo()
 
 
 /*Main function for the point based odometry */
+/**
+ * @brief Performs point-based odometry estimation using planar/edge features.
+ * 
+ * Used when feature-based odometry fails or is not reliable.
+ * 
+ * @return true if odometry is computed successfully, false otherwise.
+ */
 bool LidarScan::conduct_point_based_odo()
 {
     fLog << "-- Conduct Point-based odometry:" << endl;
@@ -513,6 +574,13 @@ bool LidarScan::conduct_point_based_odo()
 
 
 /* Load binary data for the raw scan*/
+/**
+ * @brief Loads raw LiDAR data from binary .bin file into mpLaserCloud.
+ *
+ * File must contain points in [x, y, z, time, (optional intensity)] format.
+ *
+ * @param pass Path to the binary file.
+ */
 void LidarScan::load_raw_data(const string pass)
 {
     std::ifstream lidar_data_file(pass, std::ifstream::in | std::ifstream::binary);
@@ -583,6 +651,14 @@ void LidarScan::load_raw_data(const string pass)
 
 
 /* Add tree to map*/
+
+/**
+ * @brief Adds current scan’s ground and tree features to the map module.
+ * 
+ * Prepares all necessary information like tree clusters, ground points, planar surfaces
+ * and trajectory estimates, and inserts them into `mpMap`.
+ */
+
 void LidarScan::AddScantoMap()
 {
     vector<Eigen::Vector3d> vTreeLoc;
@@ -702,10 +778,26 @@ void LidarScan::AddScantoMap()
     mpMap->insertScan(tem);
 }
 
+/**
+ * @brief Checks if a given file exists using Boost filesystem.
+ * 
+ * @param filename The path of the file to check.
+ * @return true if the file exists, false otherwise.
+ */
+
 bool fileExists(const std::string& filename) {
 	//std::ifstream file(filename);
 	return boost::filesystem::exists(filename);
 }
+
+/**
+ * @brief Loads ground points from a saved feature file (e.g., text file) and transforms them into global map frame.
+ *
+ * @param single_scan_ground_features_file Path to the ground features file (e.g., txt).
+ * @param R_lu_lup Rotation matrix from LiDAR to leveled unit plane.
+ * @param ground_height Output: average height of ground points after leveling.
+ * @return std::vector<PointType> containing all transformed ground points.
+ */
 
 std::vector<PointType> LidarScan::GetGroundFeaturesLoadOnce(std::string single_scan_ground_features_file, 
 	Eigen::Matrix3f R_lu_lup, double& ground_height)
@@ -810,7 +902,17 @@ std::vector<PointType> LidarScan::GetGroundFeaturesLoadOnce(std::string single_s
 	return ground;
 }
 
-
+/**
+ * @brief Alternative ground feature loader (line-by-line stream version).
+ *
+ * This version uses standard line-wise reading instead of full-buffer reading.
+ * Each point is transformed into the global frame using trajectory-based pose interpolation.
+ *
+ * @param single_scan_ground_features_file Path to the feature file.
+ * @param R_lu_lup Rotation matrix for leveling.
+ * @param ground_height Output: average height of all valid ground points.
+ * @return std::vector<PointType> Ground points in global frame.
+ */
 std::vector<PointType> LidarScan::GetGroundFeatures(std::string single_scan_ground_features_file, Eigen::Matrix3f R_lu_lup, double& ground_height)
 {
 	std::vector<PointType> ground;
@@ -898,7 +1000,19 @@ std::vector<PointType> LidarScan::GetGroundFeatures(std::string single_scan_grou
 	return ground;
 }
 
-
+/**
+ * @brief Loads tree and ground feature files from a single scan and inserts them into the map.
+ *
+ * This function:
+ * 1. Reads tree cluster data and associates them with unique IDs.
+ * 2. Transforms all points using GNSS + interpolation.
+ * 3. Computes averaged locations and updates integrated tree memory.
+ * 4. Loads ground planar points and updates ScanInfo metadata.
+ * 
+ * @param single_scan_features_file Path to tree features (with tree IDs).
+ * @param single_scan_ground_file Path to ground feature points.
+ * @param single_scan_id Index of the scan.
+ */
 void LidarScan::AddScanToMap(std::string single_scan_features_file, std::string single_scan_ground_file,int single_scan_id)
 {
 #if 1
@@ -1176,6 +1290,15 @@ Output:
     Odometry result, r_lut2_lut1, R_lut2_lut1
 mbTrackFeature: fail when valid number of tree pairs < MinTreePair
 ************************************/
+/**
+ * @brief Computes the 6-DOF odometry between two scans using leveled planar ground points and tree cluster features.
+ * 
+ * @return true if a valid transformation is estimated; false otherwise.
+ * 
+ * Requirements: Ground must be reasonably flat and enough tree matches must exist.
+ * Uses a joint optimization over ground-plane residuals and cylindrical tree features.
+ */
+
 bool LidarScan::computeOdometryLeveled()
 {
     fLog <<"Compute transformation through ground planar points and tree clusters"<<endl;
@@ -1509,6 +1632,14 @@ Output:
     Odometry result, r_lut2_lut1, R_lut2_lut1
 mbTrackFeature: fail when valid number of tree pairs < MinTreePair
 ************************************/
+/**
+ * @brief Estimates 2D transformation (rotation + translation) between scans based on tree cluster centroids.
+ * 
+ * @return true if similarity transform is successfully estimated; false if too few valid tree matches remain.
+ * 
+ * Assumes leveled terrain and relies on least-squares optimization over 2D projection of tree centers.
+ */
+
 bool LidarScan::compute2dSimilarityLeveled()
 {
 
@@ -1683,6 +1814,12 @@ bool LidarScan::compute2dSimilarityLeveled()
 }
 
 /*Get ground info from previous valid scans*/
+/**
+ * @brief Restores ground height and leveling rotation from the previous scan.
+ * 
+ * Used when current scan cannot extract new ground features reliably.
+ */
+
 void LidarScan::fetch_previous_ground_info()
 {
     fLog << "Get ground info from previous scan" <<endl;
@@ -1691,6 +1828,10 @@ void LidarScan::fetch_previous_ground_info()
 }
 
 /*UPdate previous ground info*/
+/**
+ * @brief Stores the ground height and leveling rotation for use in subsequent scans if needed.
+ */
+
 void LidarScan::update_previous_ground_info()
 {
     previous_ground_info_flag = true;
@@ -1699,6 +1840,14 @@ void LidarScan::update_previous_ground_info()
 }
 
 /*Compute odometry based on planar and edge points*/
+/**
+ * @brief Estimates pose transformation using edge (corner) and planar features via Ceres optimization.
+ * 
+ * @return true if pose estimation converges and passes threshold checks; false otherwise.
+ * 
+ * Applies both geometric constraints (lines, planes) and optionally distortion correction.
+ */
+
 bool LidarScan::compute_point_based_odometry()
 {
     fLog << "Compute transformation " <<endl;
@@ -2023,6 +2172,13 @@ bool LidarScan::compute_point_based_odometry()
 
 /* Based on the setting, initialize required parameters:
 mRangeTreshold, mNScan, mNFiring, mTolerateGap */
+/**
+ * @brief Initialize LiDAR scan parameters and precompute continuity thresholds.
+ * 
+ * Sets up sensor-specific configuration such as range thresholds, scan structure,
+ * and computes acceptable range continuity using angular resolution.
+ */
+
 void LidarScan::init()
 {
     // initial parameters
@@ -2124,6 +2280,13 @@ void LidarScan::init()
 for each point, prev and next continuous point
 segments of each channle.
 b*/
+/**
+ * @brief Compute attributes such as continuity, segmentation, and smoothness for each point.
+ * 
+ * Connects neighboring valid points, assigns segment IDs, and calculates smoothness values
+ * to assist in edge/surface classification.
+ */
+
 void LidarScan::computeAttribute()
 {
     int numInvalidPoint = 0;
@@ -2352,6 +2515,15 @@ void LidarScan::computeAttribute()
 True: Enough number of points are extracted
 False: else
 */
+/**
+ * @brief Extract sharp corner and flat surface features from the point cloud.
+ * 
+ * Segments are further classified into sharp, less sharp, flat, and less flat features 
+ * based on curvature. Features are stored in respective point clouds for downstream odometry.
+ * 
+ * @return true if a sufficient number of features are found.
+ */
+
 bool LidarScan::extract_edge_planar_points()
 {
     // cout << "Compute Smooth " << endl;
@@ -2633,6 +2805,16 @@ Return:
 mbTrackFeature: fail when false
 mbGroundPlane: fail when false
 ************************************/
+/**
+ * @brief Extracts ground clusters by segmenting lower scan lines and fitting planes.
+ * 
+ * Uses geometric relationships and PCA fitting to isolate ground points.
+ * Computes leveling rotation and filters out outlier segments.
+ * 
+ * @param bFinal If true, assigns ground labels to the final feature map.
+ * @return true if valid ground information is extracted or retrieved from the previous scan.
+ */
+
 bool LidarScan::extractGroundCluster(bool bFinal)
 {
 
@@ -3021,6 +3203,14 @@ return false:
     number of points from ground segments is too few
     if ground_plane_model_flag: ground info is incompatible with the previous scan
 ************************************/
+/**
+ * @brief Extracts ground segments from LiDAR scan using relative positioning and leveling information.
+ * 
+ * @param ground_plane_model_flag If true, uses an existing ground plane model for consistency checks and plane refinement.
+ * @return true If valid ground segments are found and optionally refined into a consistent ground plane.
+ * @return false If too few ground points are extracted or ground info is inconsistent with the previous frame.
+ */
+
 bool LidarScan::extract_ground_segments(bool ground_plane_model_flag)
 {
 
@@ -3435,6 +3625,16 @@ Return:
     else, false
 mbTrackFeature & mbExtractedFeature: fail when false
 ************************************/
+/**
+ * @brief Extracts planar points from previously identified ground segments.
+ * 
+ * This function computes smoothness for each point and selects low-curvature points
+ * as planar features. It outputs the leveled point cloud for ground surfaces.
+ * 
+ * @return true If at least 50 planar points are extracted successfully.
+ * @return false Otherwise.
+ */
+
 bool LidarScan::extract_planar_points_from_ground_segment()
 {
     mpSurfPointsFlatGround.reset(new pcl::PointCloud<PointType>());
@@ -3635,6 +3835,12 @@ bool LidarScan::extract_planar_points_from_ground_segment()
 }
 
 /*for each segment, compute centerPointTrans based on computed R_lu_lup*/
+/**
+ * @brief Computes the leveled center point for each segment using the R_lu_lup rotation matrix.
+ * 
+ * This is typically used after ground leveling to transform segment centers into a normalized frame.
+ */
+
 void LidarScan::computeLevelCenters()
 {
     for (int nChannel = 0; nChannel < mNScan; nChannel++)
@@ -3659,6 +3865,16 @@ Return:
     else, false
 mbTrackFeature & mbExtractedFeature: fail when number of trees < MinTreePair
 ************************************/
+/**
+ * @brief Extracts tree clusters from non-ground LiDAR segments.
+ * 
+ * Clusters are formed by aggregating vertically aligned segments, applying geometric and directional filters,
+ * and finally merging clusters that are spatially and directionally similar.
+ * 
+ * @return true If the number of valid tree clusters is greater than or equal to MinTreePair.
+ * @return false Otherwise (e.g., too few trees).
+ */
+
 bool LidarScan::extractTreeCluster()
 {
 
@@ -3942,6 +4158,13 @@ bool LidarScan::extractTreeCluster()
 }
 
 /*Compute incremental rotation and translation, and EOP in mapping frame */
+/**
+ * @brief Computes the transformation from local (LiDAR) frame to global map frame.
+ * 
+ * This function updates the pose `T_lu_m`, using either feature-based estimation or trajectory reference,
+ * and handles initialization and propagation across multiple scans.
+ */
+
 void LidarScan::computeTransformation()
 {
     if (mbInit) // first scan
@@ -4063,6 +4286,14 @@ Return:
     else, false
 mbTrackFeature: fail when number of pairing trees < MinTreePair
 ************************************/
+/**
+ * @brief Matches tree clusters between current and previous LiDAR scans using 3D alignment (center and orientation).
+ * 
+ * @param bSearch Whether to iterate over a range of kappa (yaw) angles for best alignment.
+ * @return true If enough matching tree pairs (≥ MinTreePair) are found.
+ * @return false Otherwise.
+ */
+
 bool LidarScan::matchTrees3d(bool bSearch)
 {
     fLog << "Match trees between scans in 3d" <<endl;
@@ -4248,6 +4479,14 @@ Return:
     else, false
 mbTrackFeature: fail when number of pairing trees < MinTreePair
 ************************************/
+/**
+ * @brief Matches tree clusters between current and previous LiDAR scans using 2D positional alignment (XY-plane).
+ * 
+ * @param bSearch Whether to iterate over kappa (yaw) values to find best alignment.
+ * @return true If enough matching tree pairs are found.
+ * @return false Otherwise.
+ */
+
 bool LidarScan::matchTrees2d(bool bSearch)
 {    
     fLog << "Match trees between scans in 2d" <<endl;
@@ -4390,6 +4629,13 @@ bool LidarScan::matchTrees2d(bool bSearch)
 
 /* Compute attribute of the lidar seg:
 length, vecPoints, centerPoint, vecAngle, uAngle, maxfiring, minfiring*/
+/**
+ * @brief Computes geometric and angular attributes for a LiDAR segment.
+ * 
+ * This includes segment length, average direction vector, average angular smoothness, and center point.
+ * The segment is classified based on these features (e.g., ground, vertical).
+ */
+
 void LidarSegment::computeSegAttribute()
 {
     length = vecIndex.size();
@@ -4475,6 +4721,14 @@ void LidarSegment::computeSegAttribute()
 }
 
 /* Attribute of Lidar segment has been calculated, based on the smooth derive attribute using points belong to plane*/
+/**
+ * @brief Computes plane-related attributes of a segment using smooth points.
+ * 
+ * Extracts low-smoothness points and computes their mean position to determine the segment’s planar properties.
+ * 
+ * @param thSmooth Smoothness threshold to filter points used in plane extraction.
+ */
+
 void LidarSegment::computePlaneAttribute(float thSmooth)
 {
     float ux = 0, uy = 0, uz = 0;
@@ -4505,6 +4759,12 @@ void LidarSegment::computePlaneAttribute(float thSmooth)
 // Export functions
 
 //Export points in the scan with its attributes
+/**
+ * @brief Exports LiDAR scan points with attributes to a text file.
+ * 
+ * @param outPass File path for the exported data.
+ */
+
 void LidarScan::export_scan_point(const std::string outPass)
 {
     std::ofstream fPointFile(outPass, std::ifstream::out);
@@ -4523,6 +4783,13 @@ void LidarScan::export_scan_point(const std::string outPass)
 }
 
 //Export segments with its attributes
+/**
+ * @brief Exports segment-level information for all points in a LiDAR scan.
+ * 
+ * @param outPass File path for the exported segment data.
+ * @param flag_level Whether to apply leveling transformation before exporting.
+ */
+
 void LidarScan::export_scan_segment(const std::string outPass, bool flag_level)
 {
     std::ofstream fSegFile(outPass, std::ifstream::out);
@@ -4562,6 +4829,12 @@ void LidarScan::export_scan_segment(const std::string outPass, bool flag_level)
 }
 
 //Export segments with its attributes
+/**
+ * @brief Exports final planar points (typically ground features) used in map construction.
+ * 
+ * @param outPass File path for output.
+ */
+
 void LidarScan::export_final_planar_points(const std::string outPass)
 {
     std::ofstream f_planar_point(outPass, std::ifstream::out);
@@ -4577,6 +4850,11 @@ void LidarScan::export_final_planar_points(const std::string outPass)
     f_planar_point.close();
 }
 
+/**
+ * @brief Exports all points with basic attributes such as coordinates, firing/channel info, and connectivity.
+ * 
+ * @param outPass File path for export.
+ */
 
 void LidarScan::exportPoint(const std::string outPass)
 {
@@ -4592,6 +4870,13 @@ void LidarScan::exportPoint(const std::string outPass)
 
     fPointFile.close();
 }
+
+/**
+ * @brief Exports all points with basic attributes such as coordinates, firing/channel info, and connectivity.
+ * 
+ * @param outPass File path for export.
+ */
+
 void LidarScan::exportPointChannel(const std::string outPass)
 {
     std::ofstream fPointFile(outPass, std::ifstream::out);
@@ -4610,6 +4895,12 @@ void LidarScan::exportPointChannel(const std::string outPass)
 
     fPointFile.close();
 }
+
+/**
+ * @brief Exports extracted feature points including corner and planar types.
+ * 
+ * @param outPass Output path for the features file.
+ */
 
 void LidarScan::exportFeature(const std::string outPass)
 {
@@ -4651,6 +4942,12 @@ void LidarScan::exportFeature(const std::string outPass)
     fPointFile.close();
 }
 
+/**
+ * @brief Exports transformed LiDAR points (leveled frame) with associated features and segment data.
+ * 
+ * @param outPass Path for the output file.
+ */
+
 void LidarScan::exportPointChannelTransformed(const std::string outPass)
 {
     std::ofstream fPointFile(outPass, std::ifstream::out);
@@ -4683,6 +4980,10 @@ void LidarScan::exportPointChannelTransformed(const std::string outPass)
     fPointFile.close();
 }
 
+/**
+ * @brief Exports transformed LiDAR scan points into the global frame for map building.
+ */
+
 void LidarScan::exportPointMap()
 {
 
@@ -4710,6 +5011,12 @@ void LidarScan::exportPointMap()
     }
 }
 
+/**
+ * @brief Exports all points with basic attributes such as coordinates, firing/channel info, and connectivity.
+ * 
+ * @param outPass File path for export.
+ */
+
 void LidarScan::exportPointPerChannel(const std::string folderName)
 {
 
@@ -4729,6 +5036,12 @@ void LidarScan::exportPointPerChannel(const std::string folderName)
         fPointFile.close();
     }
 }
+
+/**
+ * @brief Exports segment information such as center, length, angle, and transformed coordinates.
+ * 
+ * @param folderName Output directory or prefix for file generation.
+ */
 
 void LidarScan::exportSegmentPerChannel(const std::string folderName)
 {
@@ -4755,6 +5068,13 @@ void LidarScan::exportSegmentPerChannel(const std::string folderName)
         fSegFile.close();
     }
 }
+
+/**
+ * @brief Exports segment information such as center, length, angle, and transformed coordinates.
+ * 
+ * @param folderName Output directory or prefix for file generation.
+ */
+
 void LidarScan::exportSegmentInfo(const std::string outPass)
 {
     std::ofstream fSegFile(outPass, std::ifstream::out);
@@ -4779,6 +5099,12 @@ void LidarScan::exportSegmentInfo(const std::string outPass)
     fSegFile.close();
 }
 
+/**
+ * @brief Exports segment information such as center, length, angle, and transformed coordinates.
+ * 
+ * @param folderName Output directory or prefix for file generation.
+ */
+
 void LidarScan::exportSegmentTransInfo(const std::string outPass)
 {
     std::ofstream fSegFile(outPass, std::ifstream::out);
@@ -4795,6 +5121,12 @@ void LidarScan::exportSegmentTransInfo(const std::string outPass)
     }
     fSegFile.close();
 }
+
+/**
+ * @brief Exports segment information such as center, length, angle, and transformed coordinates.
+ * 
+ * @param folderName Output directory or prefix for file generation.
+ */
 
 void LidarScan::exportSegmentInfoPerChannel(const std::string folderName)
 {
@@ -4815,6 +5147,12 @@ void LidarScan::exportSegmentInfoPerChannel(const std::string folderName)
         fSegFile.close();
     }
 }
+
+/**
+ * @brief Exports final segmented feature points with cluster and feature IDs, optionally in transformed global frame.
+ * 
+ * @param outPass File path for export.
+ */
 
 void LidarScan::exportSegments(const std::string outPass)
 {
@@ -4842,6 +5180,12 @@ void LidarScan::exportSegments(const std::string outPass)
     fSegFile.close();
 }
 
+/**
+ * @brief Exports final segmented feature points with cluster and feature IDs, optionally in transformed global frame.
+ * 
+ * @param outPass File path for export.
+ */
+
 void LidarScan::exportFinal(const std::string outPass)
 {
     std::ofstream fSegFile(outPass, std::ifstream::out);
@@ -4867,6 +5211,12 @@ void LidarScan::exportFinal(const std::string outPass)
     }
     fSegFile.close();
 }
+
+/**
+ * @brief Exports final segmented feature points with cluster and feature IDs, optionally in transformed global frame.
+ * 
+ * @param outPass File path for export.
+ */
 
 void LidarScan::exportFinalMapping(const std::string outPass)
 {
@@ -4898,6 +5248,13 @@ void LidarScan::exportFinalMapping(const std::string outPass)
     fSegFile.close();
 }
 
+/**
+ * @brief Exports planar ground points with optional leveling applied.
+ * 
+ * @param outPass Output file path.
+ * @param flagLevel If true, applies leveling rotation to point coordinates.
+ */
+
 void LidarScan::exportGroundPoints(const std::string outPass, bool flagLevel)
 {
     std::ofstream fGroundPoints(outPass, std::ifstream::out);
@@ -4917,6 +5274,13 @@ void LidarScan::exportGroundPoints(const std::string outPass, bool flagLevel)
     fGroundPoints.close();
 }
 
+/**
+ * @brief Exports planar ground points with optional leveling applied.
+ * 
+ * @param outPass Output file path.
+ * @param flagLevel If true, applies leveling rotation to point coordinates.
+ */
+
 void LidarScan::exportGroundPoints2(const std::string outPass, bool flagLevel)
 {
     std::ofstream fGroundPoints(outPass, std::ifstream::out);
@@ -4935,6 +5299,10 @@ void LidarScan::exportGroundPoints2(const std::string outPass, bool flagLevel)
     }
     fGroundPoints.close();
 }
+
+/**
+ * @brief Exports all final scan data (features only) in global coordinates for mapping.
+ */
 
 void LidarScan::exportScan()
 {
@@ -4957,6 +5325,10 @@ void LidarScan::exportScan()
         }
     }
 }
+
+/**
+ * @brief Exports transformed LiDAR scan points into the global frame for map building.
+ */
 
 void LidarScan::exportRefScan()
 {
@@ -5005,6 +5377,11 @@ void LidarScan::exportRefScan()
     }
 }
 
+/**
+ * @brief Exports structural information about identified tree clusters.
+ * 
+ * @param outPass Output path for writing cluster segment centers and associations.
+ */
 
 void LidarScan::exportTreeClusterInfo(const std::string outPass)
 {

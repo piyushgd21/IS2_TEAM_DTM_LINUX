@@ -1,18 +1,38 @@
 #include "../header/CTrajectory.h"
 
+/**
+ * @brief Constructor for CTrajectory class.
+ */
 CTrajectory::CTrajectory()
 {
 }
 
+/**
+ * @brief Destructor for CTrajectory class.
+ */
 CTrajectory::~CTrajectory()
 {
 }
 // insert timetag from image for selecting reference points
+/**
+ * @brief Set reference times (e.g., from image timestamps) used to select keyframes or matching points.
+ * 
+ * @param timeList Vector of time values (in seconds).
+ */
+
 void CTrajectory::setRefTime(vector<double> timeList)
 {
 	refTimeList = timeList;
 }
 
+/**
+ * @brief Load the LiDAR-to-body transformation from a parameter file.
+ * 
+ * The file should contain: dx dy dz omega phi kappa
+ * The transformation is stored in `r_lu_b` and `R_lu_b`.
+ * 
+ * @param paraFile Path to the LiDAR parameter file.
+ */
 void CTrajectory::loadLidarPara(string paraFile)
 {
 	ifstream f_para;
@@ -28,6 +48,14 @@ void CTrajectory::loadLidarPara(string paraFile)
 	f_para >> r_lu_b(0) >> r_lu_b(1) >> r_lu_b(2) >> ome >> phi >> kap;
 	Compute_Rotation(deg2rad(ome), deg2rad(phi), deg2rad(kap), R_lu_b);
 }
+
+/**
+ * @brief Load trajectory from a GNSS/INS file.
+ * 
+ * Supports multiple formats based on the first line in the file (gnssinsType).
+ * 
+ * @param trajFile Path to the trajectory file.
+ */
 
 void CTrajectory::loadTraj(string trajFile)
 {
@@ -138,6 +166,13 @@ void CTrajectory::loadTraj(string trajFile)
 		 << rad2deg(bopList.back().pos.phi) << "\t" << rad2deg(bopList.back().pos.kappa) << endl;
 }
 
+/**
+ * @brief Load SLAM-enhanced trajectory (post-processed), aligning times using lidar frame timestamps.
+ * 
+ * @param slam_traj_path Path to SLAM result file.
+ * @param lidar_times List of LiDAR timestamps (in ms).
+ */
+
 void CTrajectory::LoadSlamResultTrajectory(std::string slam_traj_path,const std::vector<double>& lidar_times)
 {
 		// event file
@@ -200,7 +235,9 @@ void CTrajectory::LoadSlamResultTrajectory(std::string slam_traj_path,const std:
 	eopList = bopList;
 	//cout << scan_pose.size() << "pose" <<endl;
 }
-
+/**
+ * @brief Convert body-frame trajectory to LiDAR-unit frame using transformation parameters.
+ */
 void CTrajectory::computeEop()
 {
 	eopList = bopList;
@@ -220,20 +257,25 @@ void CTrajectory::computeEop()
 
 		Find_Rotation(R_lu_m, eopList[i].pos.omega, eopList[i].pos.phi, eopList[i].pos.kappa);
 	}
-
+	// Write out transformed trajectory
     std::string outPass =  output_folder+ "eop_info.txt";
-       std::ofstream fEop(outPass, std::ifstream::out);
+    std::ofstream fEop(outPass, std::ifstream::out);
     fEop << fixed << std::setprecision(6);
 	for (int i = 0; i < eopList.size(); i++)
 	{
 		fEop << eopList[i].time << "\t" << eopList[i].pos.XO << "\t" << eopList[i].pos.YO << "\t" << eopList[i].pos.ZO << "\t"
 			 << rad2deg(eopList[i].pos.omega) << "\t" << rad2deg(eopList[i].pos.phi) << "\t" << rad2deg(eopList[i].pos.kappa) << endl;
 	}
-fEop.close();
+	fEop.close();
 }
+
+/**
+ * @brief Interpolates position and orientation at a given time from EOP list.
+ */
 
 bool CTrajectory::eopInterpolation(double tempTime, int startIndex, int &bopID, Eigen::Vector3d &r, Eigen::Matrix3d &R)
 {
+	// Look back slightly to ensure match
 	startIndex = max(0, startIndex - 5);
 
 	// find the corresponding trajectory time from trajectory file
@@ -251,7 +293,7 @@ bool CTrajectory::eopInterpolation(double tempTime, int startIndex, int &bopID, 
 		return false;
 
 	
-
+	// Linear interpolation of position
 	// second option
 	Eigen::Vector3d r1(eopList[bopIndex].pos.XO, eopList[bopIndex].pos.YO, eopList[bopIndex].pos.ZO);
 	Eigen::Vector3d r2(eopList[bopIndex + 1].pos.XO, eopList[bopIndex + 1].pos.YO, eopList[bopIndex + 1].pos.ZO);
@@ -260,6 +302,7 @@ bool CTrajectory::eopInterpolation(double tempTime, int startIndex, int &bopID, 
 	// cout << r1.transpose() <<"\t" << r2.transpose() <<"\t"<< t_ratio <<endl;
 	Eigen::Vector3d r_new = r1 + (r2 - r1) * t_ratio;
 
+	// SLERP interpolation of rotation
 	Eigen::Matrix3d R1, R2, R_new;
 
 	Eigen::AngleAxisd pitchAngle(eopList[bopIndex].pos.omega, Eigen::Vector3d::UnitX());
@@ -287,6 +330,9 @@ bool CTrajectory::eopInterpolation(double tempTime, int startIndex, int &bopID, 
 
 
 /* To improve the efficiency, start inpex is optional*/
+/**
+ * @brief Basic linear + quaternion interpolation from BOP trajectory.
+ */
 bool CTrajectory::bopInterpolation(double tempTime, int startIndex, int &bopID, Eigen::Vector3d &r, Eigen::Matrix3d &R)
 {
 	startIndex = max(0, startIndex - 5);
@@ -335,6 +381,14 @@ bool CTrajectory::bopInterpolation(double tempTime, int startIndex, int &bopID, 
 	return true;
 }
 
+/**
+ * @brief Interpolate position and orientation between two BOPs.
+ * 
+ * @param b1 First BOP.
+ * @param b2 Second BOP.
+ * @param t Target time.
+ * @param[out] e_new Interpolated EOP.
+ */
 
 void Interpolate_Pos(BOP b1, BOP b2, double t, EOP &e_new)
 {
@@ -345,6 +399,10 @@ void Interpolate_Pos(BOP b1, BOP b2, double t, EOP &e_new)
 
 	Spherical_Linear_Interpolation(b1, b2, t_ratio, e_new);
 }
+
+/**
+ * @brief Performs SLERP between two BOP rotations and updates interpolated EOP.
+ */
 
 void Spherical_Linear_Interpolation(BOP b1, BOP b2, double t_ratio, EOP &e_new)
 {
@@ -382,7 +440,9 @@ void Spherical_Linear_Interpolation(BOP b1, BOP b2, double t_ratio, EOP &e_new)
 	e_new.kappa = kap;
 }
 
-
+/**
+ * @brief Convert a rotation matrix to quaternion vector (q0, qx, qy, qz).
+ */
 
 void Rot2Qua(Eigen::Matrix3d R, Eigen::Vector4d &q)
 {
@@ -426,6 +486,9 @@ void Rot2Qua(Eigen::Matrix3d R, Eigen::Vector4d &q)
 	q << q0, qx, qy, qz;
 }
 
+/**
+ * @brief Convert a quaternion to Euler angles (omega, phi, kappa).
+ */
 void Qua2Eul(Eigen::Vector4d q, double &ome, double &phi, double &kap)
 {
 	double q0, qx, qy, qz;

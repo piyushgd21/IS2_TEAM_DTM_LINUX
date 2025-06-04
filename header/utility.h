@@ -173,7 +173,6 @@ inline double computePoint2PlaneDistance(Eigen::Vector3d p0, Eigen::Vector3d p1,
 inline Eigen::Vector3d computePoint2LineProjection(Eigen::Vector3d p0, Eigen::Vector3d p1, Eigen::Vector3d p2)
 {
     return (p1 + (p0-p1).dot(p2-p1)/((p2-p1).dot(p2-p1)) * (p2-p1));
-
 }
 
 inline float rad2deg(float rad_)

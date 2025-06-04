@@ -1,5 +1,5 @@
 #include "../header/utility.h"
-
+/** Output file streams for various logs and data exports. */
 std::ofstream fMapping;
 std::ofstream fMappingTraj;
 
@@ -15,6 +15,8 @@ std::ofstream fMappedPoints;
 std::ofstream f_mapping_debug;
 std::ofstream fDebug;
 std::ofstream fMappedRef;
+
+/** Input and output folder paths. */
 std::string output_folder;
 std::string output_folder_odometry;
 std::string output_folder_loopclouse;
@@ -26,16 +28,24 @@ std::string output_folder_iscan_map;
 std::string input_folder;
 
 
-
+/** Timing metrics for profiling stages of SLAM. */
 double TimeFeature = 0.0;
 double TimePoint = 0.0;
 double TimeLoading = 0.0;
 double TimeSegment = 0.0;
 double Tground = 0.0, Ttree = 0.0, Topt = 0.0, Tcheck = 0.0, Tp_extraction = 0.0, Tp_opt = 0.0;
-double SCAN_DURATION = 100.0; // nominal scan duration
+/** Nominal LiDAR scan duration in milliseconds. */
+double SCAN_DURATION = 100.0;
 
+/** Mutex for synchronized transformations. */
 std::mutex mTransMutex;
 
+/**
+ * @brief Computes the median of a float vector.
+ * 
+ * @param v Vector of float values.
+ * @return Median value.
+ */
 float median(vector<float> &v)
 {
     size_t n = v.size() / 2;
@@ -47,6 +57,12 @@ float median(vector<float> &v)
 Input: plane parameters
 Output: updated plane parameters, index of the component to 1
 */
+/**
+ * @brief Normalizes plane parameters so that the largest absolute component of the normal is 1.
+ * 
+ * @param params Plane parameters (a, b, c, d).
+ * @return Index of the fixed component.
+ */
 int planeParamTrans(Eigen::Vector4d &params)
 {
     double maxElement = max(max(abs(params(0)), abs(params(1))), abs(params(2)));
@@ -74,6 +90,14 @@ int planeParamTrans(Eigen::Vector4d &params)
     return(fixIndex);
 }
 
+/**
+ * @brief Fits a line to 3D points using PCA.
+ * 
+ * @param points Input 3D points.
+ * @param normal Output direction vector of the line.
+ * @param centerPoint Output centroid of the line.
+ * @return True if line is valid.
+ */
 bool lineFitting(const std::vector<Eigen::Vector3f> points, Eigen::Vector3f &normal, Eigen::Vector3f &centerPoint)
 {
     int numPoint = points.size();
@@ -107,6 +131,14 @@ bool lineFitting(const std::vector<Eigen::Vector3f> points, Eigen::Vector3f &nor
 
 /*return the plane parameters, first 3 elements is the normal vector.
 if pass the pca analysis, return yes*/
+/**
+ * @brief Fits a plane to 3D points using PCA and least squares.
+ * 
+ * @param points Input 3D points.
+ * @param params Output plane coefficients (a, b, c, d).
+ * @param centerPoint Output centroid of the plane.
+ * @return True if the plane passes shape criteria.
+ */
 bool planeFitting(const std::vector<Eigen::Vector3f> points, Eigen::Vector4f &params, Eigen::Vector3f &centerPoint)
 {
     int numPoint = points.size();
@@ -189,6 +221,15 @@ bool planeFitting(const std::vector<Eigen::Vector3f> points, Eigen::Vector4f &pa
         return false;
 }
 
+/**
+ * @brief Fits a plane to 3D points and checks for outliers.
+ * 
+ * @param points Input 3D points.
+ * @param params Output plane coefficients.
+ * @param centerPoint Output centroid.
+ * @param fail_type Reason for failure (1 = eigen check, 2 = too many outliers).
+ * @return True if fitting succeeds.
+ */
 bool planeFitting_outlier_check(const std::vector<Eigen::Vector3f> points, Eigen::Vector4f &params, Eigen::Vector3f &centerPoint, int &fail_type)
 {
     int numPoint = points.size();
@@ -293,7 +334,14 @@ bool planeFitting_outlier_check(const std::vector<Eigen::Vector3f> points, Eigen
         return false;
 }
 
-
+/**
+ * @brief Computes 2D similarity transform (rotation + translation) between matched 2D points.
+ * 
+ * @param points1 Set 1 of 2D points.
+ * @param points2 Set 2 of 2D points.
+ * @param p Optional ID used for debug file naming.
+ * @return Vector with [theta, tx, ty].
+ */
 Eigen::Vector3f compute2dSimilarity(const std::vector<Eigen::Vector3f> points1, const std::vector<Eigen::Vector3f> points2, int p)
 {
     std::vector<pair<int, int>> pointPairs;
@@ -405,6 +453,12 @@ Eigen::Vector3f compute2dSimilarity(const std::vector<Eigen::Vector3f> points1, 
     return para;
 }
 
+/**
+ * @brief Loads settings from a configuration file into a parameter structure.
+ * 
+ * @param settingFile Path to the settings file.
+ * @param para Structure to store the parsed parameters.
+ */
 void loadSettingPara(string settingFile, SettingPara &para)
 {
     // event file
@@ -703,6 +757,15 @@ void loadSettingPara(string settingFile, SettingPara &para)
 // Function to find fixed parameter to ceres
 // input:
 //*********************************************************
+/**
+ * @brief Checks and applies fixed and weighted parameter constraints in a Ceres optimization problem.
+ * 
+ * @param problem Pointer to the Ceres problem.
+ * @param X Parameters to optimize.
+ * @param stdX Standard deviations of parameters.
+ * @param blocksize Size of each parameter block.
+ * @param nblocks Number of blocks.
+ */
 void Checkforconstantparams(ceres::Problem *problem, double *X, double *stdX, const int blocksize, const int nblocks)
 {
 
@@ -749,7 +812,9 @@ void Checkforconstantparams(ceres::Problem *problem, double *X, double *stdX, co
     // cout << "Number of unknowns: " << blocksize*nblocks << ", number of fixed: " << n_fixed_params << ", number of weighted: " << n_weighted_params << endl;
 }
 
-
+/**
+ * @brief Computes rotation matrix from Euler angles.
+ */
 void Compute_Rotation(double om, double phi, double kap, Eigen::Matrix3d &R)
 {
 	// radius
@@ -806,7 +871,9 @@ Eigen::Matrix3f Compute_Rotation(float om, float phi, float kap)
 
 	return R;
 }
-
+/**
+ * @brief Recovers Euler angles from a rotation matrix.
+ */
 void Find_Rotation(Eigen::Matrix3d R, double &ome, double &phi, double &kap)
 {
 	// radius
@@ -858,6 +925,13 @@ Eigen::Vector3f Find_Rotation(Eigen::Matrix3f R)
 	return result;
 }
 
+/**
+ * @brief Downsamples a point cloud using octree-based radius filtering.
+ * 
+ * @param original_pc Input point cloud.
+ * @param distance Minimum allowed distance between retained points.
+ * @param downsampeld_pc Output downsampled cloud.
+ */
 void downsamplePointCloudDistance(pcl::PointCloud<PointType>::Ptr original_pc, double distance, pcl::PointCloud<PointType> &downsampeld_pc )
 {
 
@@ -899,6 +973,13 @@ void downsamplePointCloudDistance(pcl::PointCloud<PointType>::Ptr original_pc, d
 
 }
 
+/**
+ * @brief Downsamples point cloud using brute-force radius rejection (more precise).
+ * 
+ * @param original_pc Input cloud.
+ * @param distance Minimum allowed separation between points.
+ * @return Downsampled point cloud.
+ */
 pcl::PointCloud<PointType> DownSamplePointCloudBasedOnDistance(pcl::PointCloud<PointType>::Ptr original_pc, double distance)
 {
 	pcl::PointCloud<PointType> downsampeld_pc;
