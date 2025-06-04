@@ -3,36 +3,50 @@
 #include "../header/CTrajectory.h"
 #include "../header/utility.h"
 
+/**
+ * @brief Main function for processing LiDAR scan sequences using SLAM.
+ *
+ * This function sets up directories, reads time and trajectory data, and iteratively processes
+ * each scan for odometry and feature extraction. Outputs are written to the odometry and loopclosure
+ * folders in the specified output directory.
+ *
+ * @param folder_path Path to the dataset folder containing /sequence/.
+ * @param setting_file_name File name of the SLAM settings file inside /sequence/.
+ * @param output_folder_path Where all results and logs will be stored.
+ * @param exe_name Name of the current executable, used for logging.
+ * @return Always returns 1 (success).
+ */
+
 int execute(std::string folder_path,std::string setting_file_name,std::string output_folder_path, std::string exe_name)
 {
-    //system("read -p 'Press Enter to continue...' var");
-    SCAN_DURATION = 100.0;
+    SCAN_DURATION = 100.0; // Fixed duration used to filter valid scans
 
+    // Build full path to dataset and relevant subfolders
     std::string dataset_folder = folder_path;
     dataset_folder = dataset_folder + "/";
-
     input_folder = dataset_folder + "sequence/";
-	output_folder = output_folder_path;//dataset_folder + "result/";
-    boost::filesystem::create_directories(output_folder);
+	output_folder = output_folder_path;
 
+     // Create result output folders
+    boost::filesystem::create_directories(output_folder);
     output_folder_odometry = output_folder + "odometry/";
     boost::filesystem::create_directories(output_folder_odometry);
-
     output_folder_loopclouse = output_folder + "loopclosure/";
     boost::filesystem::create_directories(output_folder_loopclouse);
 
-    //-------------Load Parameter ----------------
-	std::string paraPath = input_folder+setting_file_name;//input_folder + "setting.txt";
+    // ---------------- Load Parameters ----------------
+    // Read the SLAM settings file (copied to output for traceability)
+	std::string paraPath = input_folder+setting_file_name;
 	std::string copy_to_file = output_folder + setting_file_name;
-	CopyFile(wstring(paraPath.begin(), paraPath.end()).c_str(), wstring(copy_to_file.begin(), copy_to_file.end()).c_str(),false); 
+	CopyFileW(wstring(paraPath.begin(), paraPath.end()).c_str(), wstring(copy_to_file.begin(), copy_to_file.end()).c_str(),false); 
     SettingPara sPara;
-    loadSettingPara(paraPath, sPara);
+    loadSettingPara(paraPath, sPara); // Load configuration into sPara object
     cout << sPara.nChannel << "\t" << sPara.treeAngleThreshold << "\t" << sPara.groundBufferTree << endl;
 
     //-------------Load Time tag------------------
-    std::vector<double> vTime;     // in ms
-    std::vector<double> vDuration; // in ms
-	std::vector<int> vPointsNumber;
+    std::vector<double> vTime;     // Scan start times (in ms)
+    std::vector<double> vDuration;  // Scan durations (in ms)
+	std::vector<int> vPointsNumber; // Number of points in each scan
     std::string timePass = input_folder + "times.txt";
     ifstream fTime;
     fTime.open(timePass);
@@ -42,6 +56,8 @@ int execute(std::string folder_path,std::string setting_file_name,std::string ou
         cout << "failed to open" << timePass << endl;
         throw std::runtime_error("Wrong file name");
     }
+
+    // Read times.txt: one line per scan (StartTime, Duration, ?, PointCount)
     std::string str1, str2, str3, str4;
 
     while (fTime >> str1 >> str2 >> str3 >> str4)
@@ -50,7 +66,7 @@ int execute(std::string folder_path,std::string setting_file_name,std::string ou
         vDuration.push_back(stod(str2));
 		vPointsNumber.push_back(stoi(str4));
     }
-    // vTime.push_back(vTime.back() + vTime.back() - vTime[vTime.size() - 2]);
+   // Print basic info about scan timing
     cout << vTime[0] << "\t" << vTime[vTime.size() - 2] << "\t" << vTime.back() << "\t" << vTime.size() << endl;
     cout << vTime[0] << "\t" << vTime[vTime.size() - 2] << "\t" << vTime.back() << "\t" << vTime.size() << endl;
 
@@ -59,33 +75,38 @@ int execute(std::string folder_path,std::string setting_file_name,std::string ou
     //if (argc == 3)
     {
         cTrajectory = new CTrajectory();
+
+        // Load LiDAR mounting calibration
         std::string lidarParaPass = input_folder + "lidar_para.txt";
         cTrajectory->loadLidarPara(lidarParaPass);
 		//(TODO)
+        // Load raw trajectory (positions, orientations)
         std::string trajPass = input_folder + "trajectory.txt";
         cTrajectory->loadTraj(trajPass);
-        //export EOP 
+        //export EOP
+        // Compute derived orientation parameters (EOPs)
         cTrajectory->computeEop();
         cout << "Number of trajectory event: " << cTrajectory->bopList.size() << endl;
     }
-    //system("read -p 'Press Enter to continue...' var");
-
+   
+    // ---------------- Prepare Output File Paths ----------------
     std::string outPass =  output_folder_odometry + "trajectory_info.txt";
     std::string outPass2 = output_folder_odometry + "mapped_lidar.txt";
     std::string outPass3 = output_folder_odometry + "_Odometry_LOG.txt";
     std::string outPass4 = output_folder + "_Debug.txt";
     std::string outPass6 = output_folder_odometry + "trajectory_ref.txt";
     std::string outPass7 = output_folder_odometry + "trajectory_residual.txt";
-
     std::string outPassResPb = output_folder_odometry + "trajectory_res_pb.txt";
     std::string outPassResFb = output_folder_odometry + "trajectory_res_fb.txt";
 
+    // Open debug and mapping logs
     f_odometry_debug.open(output_folder_odometry + "_Debug_Odo.txt", std::ifstream::out);
     f_mapping_debug.open(output_folder+"_Debug_Mapping.txt", std::ifstream::out);
     fDebug.open(outPass4, std::ifstream::out);
 	fDebug<< "exe: " << exe_name <<endl;
 
 #ifdef EXPORT_TRAJECTORY
+    // Initialize trajectory output files
     fMapping.open(outPass, std::ifstream::out);
     fMapping << fixed << std::setprecision(4);
     fMapping << "ScanId\tX\tY\tZ\tOmega\tPhi\tKappa\tNumTree\tOdometryFlag" <<endl;
@@ -106,6 +127,7 @@ int execute(std::string folder_path,std::string setting_file_name,std::string ou
 #endif
 
 #ifdef EXPORT_LOG
+    // General odometry log
     fLog.open(outPass3, std::ifstream::out);
 	fLog <<"exe: "<< exe_name <<endl;
     fLog << fixed << std::setprecision(4);
@@ -114,6 +136,7 @@ int execute(std::string folder_path,std::string setting_file_name,std::string ou
 #endif
 
 #ifdef EXPORT_RESULT
+    // Initialize mapped LiDAR output
     int subCount = 1;
     if (cTrajectory)
     {
@@ -122,15 +145,15 @@ int execute(std::string folder_path,std::string setting_file_name,std::string ou
         fMappedRef << fixed << std::setprecision(4);
     }
 #endif
-
+// ---------------- Main Odometry Loop ----------------
     TicToc t;
-    int trackingID = 0;
-    int trackedNum = 0;
-    vector<int> vecTrackedNum;
+    int trackingID = 0; // ID for each tracking segment
+    int trackedNum = 0; // How many scans were tracked in current segment
+    vector<int> vecTrackedNum; // Summary list of track sizes
     LidarScan *prevScan = NULL;
-
     int scanCount = 0;
 
+    // Mapping thread (optional)
     Mapping *pMap = NULL;
 #ifdef MAP
     pMap = new Mapping(sPara, cTrajectory);
@@ -138,6 +161,7 @@ int execute(std::string folder_path,std::string setting_file_name,std::string ou
 #endif 
 
     //************ Main loop for lidar odometry tracking ***********************
+     // Iterate over all scan indices
     for (size_t scanIndex = sPara.initScan; scanIndex <= sPara.endScan; scanIndex++) // index for scan  //natural, 300 - 4800 //ouster plantation: 400-28600
     {
         std::stringstream lidar_data_path;
@@ -163,10 +187,6 @@ int execute(std::string folder_path,std::string setting_file_name,std::string ou
             }
         }
 
-        //// Scans.emplace_back(lidar_data_path.str(), index);
-        //// duration = duration > 150.0 ? SCAN_DURATION : duration;
-        //// map->mpVecScan.push_back(tempScan);
-        //// Scans.push_back(tempScan);
 
         // check the duration of a scan, if the duration is too short -> not a complete scan, ignore
         double duration = vDuration[scanIndex];
@@ -174,7 +194,7 @@ int execute(std::string folder_path,std::string setting_file_name,std::string ou
             continue;
 
         // call odometry thread for this scan
-
+        // Process current scan into LidarScan object
         LidarScan *tempScan = new LidarScan(lidar_data_path.str(), scanIndex, prevScan, trackingID, vTime[scanIndex], duration, sPara, tree_feature_file.str(),
 			ground_feature_file.str(), vPointsNumber[scanIndex],cTrajectory, pMap);
         scanCount++;
@@ -193,6 +213,7 @@ int execute(std::string folder_path,std::string setting_file_name,std::string ou
         }
 
 #ifdef EXPORT_RESULT
+        // Split output into multiple files if scan count exceeds threshold
         int subCount = 1;
         if (cTrajectory)
         {
@@ -209,7 +230,10 @@ int execute(std::string folder_path,std::string setting_file_name,std::string ou
 #endif      
     }
 
+    // Add final tracked segment
     vecTrackedNum.push_back(trackedNum);
+
+    // Print overall timing and segment summary
     cout << t.toc() / 1000.0 << endl;
     cout << vecTrackedNum.size() << endl;
 
@@ -218,6 +242,8 @@ int execute(std::string folder_path,std::string setting_file_name,std::string ou
         if (vecTrackedNum[i] > 1)
             cout << i << " - " << vecTrackedNum[i] << endl;
     }
+
+    // Print time profiling for each processing step
     cout << "Loading: " << TimeLoading / 1000.0 << endl;
     cout << "Segmentation: " << TimeSegment / 1000.0 << endl;
     cout << "Pb: " << TimePoint / 1000.0 << endl;
@@ -227,6 +253,7 @@ int execute(std::string folder_path,std::string setting_file_name,std::string ou
     cout << "Topt: " << Topt / 1000.0 << endl;
     cout << "Ttemp: " << Tcheck / 1000.0 << endl;
 
+    // ---------------- Summary File ----------------
     ofstream fSummary(output_folder_odometry + "Odometry_Summary.txt");
     fSummary << "Utilized scan index: " << sPara.initScan << " -> " << sPara.endScan << endl;
     fSummary << "Odometry setting: " << endl;
@@ -253,45 +280,10 @@ int execute(std::string folder_path,std::string setting_file_name,std::string ou
     }
 
 #ifdef MAP
-    tMap.join();
+    tMap.join(); // Wait for mapping thread to finish
 #endif
 
-    // outPass = output_folder + "trajectory_info2.txt";
-    // cout << outPass << endl;
-    // ofstream fNew;
-    // fNew.open(outPass, std::ifstream::out);
-    // fNew << fixed << std::setprecision(4);
-    // cout << map->mVecScan.size() << endl;
-
-    // for (int i = 0; i < map->mVecScan.size(); i++)
-    // {
-    //     fNew << map->mVecScan[i].scanID << "\t" << map->mVecScan[i].eop.XO << "\t" << map->mVecScan[i].eop.YO << "\t" << map->mVecScan[i].eop.ZO
-    //          << "\t" << rad2deg(map->mVecScan[i].eop.omega) << "\t" << rad2deg(map->mVecScan[i].eop.phi) << "\t" << rad2deg(map->mVecScan[i].eop.kappa)
-    //          << "\t" << map->mVecScan[i].partID << endl;
-    // }
-    // fNew.close();
-    // fMapping.close();
-
-    // outPass = output_folder + "trees.txt";
-
-    // fMapping.open(outPass, std::ifstream::out);
-    // fMapping << fixed << std::setprecision(4);
-    // for (int i = 0; i < map->mVecTrees.size(); i++)
-    // {
-    //     fMapping << map->mVecTrees[i].id << ": ";
-    //     for (int j = 0; j < map->mVecTrees[i].vecScanId.size(); j++)
-    //         fMapping << map->mVecTrees[i].vecScanId[j] << " ";
-    //     fMapping << endl;
-    // }
-    // fMapping.close();
-    // fMappedPoints.close();
-    // outPass = output_folder + "treesPoints.txt";
-
-    // fMappedPoints.open(outPass, std::ifstream::out);
-    // fMappedPoints << fixed << std::setprecision(4);
-    // map->exportTree(true);
-    // fMappedPoints.close();
-
+// ---------------- Cleanup ----------------
 #ifdef EXPORT_LOG
     fLog << endl;
     fLog << "----------------------------" << endl;
@@ -319,6 +311,19 @@ int execute(std::string folder_path,std::string setting_file_name,std::string ou
 
 }
 
+/**
+ * @brief Reads a batch process file and extracts input folders and setting file names.
+ * 
+ * The batch file is expected to contain lines like:
+ * -folder <input_folder_path>
+ * -setting <setting_file_name>
+ *
+ * @param file_name Path to the batch process text file.
+ * @param batch_input_folders Reference to a vector that will hold input folder paths.
+ * @param batch_setting_file_names Reference to a vector that will hold setting file names.
+ * @return true if the file is read successfully, false otherwise.
+ */
+
 bool ReadBatchProcessFile(std::string file_name,std::vector<std::string>& batch_input_folders,std::vector<string>& batch_setting_file_names)
 {
 	std::ifstream file_stream(file_name);
@@ -344,6 +349,15 @@ bool ReadBatchProcessFile(std::string file_name,std::vector<std::string>& batch_
 	return true;
 }
 
+/**
+ * @brief Extracts just the base name of a file, without its directory or extension.
+ *
+ * For example: "path/to/file.txt" → "file"
+ *
+ * @param file_name Pointer to the full file path.
+ * @return A string containing only the pure file name (without path and extension).
+ */
+
 std::string GetPureFileName(std::string *file_name)
 {
 	int slash_pos = (*file_name).find_last_of('/');
@@ -353,16 +367,19 @@ std::string GetPureFileName(std::string *file_name)
 	std::string dir_path((*file_name).substr(0, slash_pos + 1));
 
 	return pure_name;
-	//unsigned fileIndex = 1;
-	//while (_access((*file_name).c_str(), 0) != -1)
-	//{
-	//	//printf( "File ACCESS.C exists " );
-	//	(*file_name) = dir_path + pure_name + "_" + boost::to_string(fileIndex) + suffix;
-	//	fileIndex++;
-	//}
-
-	//std::cout << "file_name : " << (*file_name) << std::endl;
 }
+
+/**
+ * @brief Entry point for batch SLAM processing.
+ *
+ * Reads the batch process file, validates the number of input folders and setting files,
+ * and calls `execute()` for each folder-setting pair.
+ *
+ * @param argc Number of command-line arguments.
+ * @param argv Command-line argument vector.
+ *        argv[1] = batch file path (e.g., batch_process.txt)
+ * @return 1 on completion.
+ */
 
 int main(int argc, char **argv)
 {

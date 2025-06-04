@@ -57,6 +57,22 @@ Eigen::Matrix4f Trajectory_ICP(const pcl::PointCloud<pcl::PointXYZ>& comapred_po
 }
 }
 /*main function of build map*/
+/**
+ * @brief Main function for building the map from LiDAR scans.
+ *
+ * This function performs the complete mapping pipeline:
+ *  - Integration of raw LiDAR scans
+ *  - Feature extraction
+ *  - Pose estimation and refinement
+ *  - Tree model fitting and long-term optimization
+ *  - Optional global map alignment and trajectory export
+ *  - Final export of mapping results (ground, trees, trajectories)
+ *
+ * @note Includes logic for intermediate loop closure, raw-level optimization,
+ *       fetching and updating tree observations, and merging map trees.
+ *
+ * @throws std::runtime_error on trajectory time mismatch.
+ */
 void Mapping::buildMap()
 {
     std::string outPass = output_folder + "TrajectoryMapping.txt";
@@ -520,6 +536,13 @@ void Mapping::buildMap()
     fMapLog << "end" << endl;
 }
 
+/**
+ * @brief Performs intermediate-level loop closure optimization.
+ *
+ * This function runs loop closure (LC) on ISCAN level.
+ * If configured to run iteratively, it continues until tree merging stabilizes.
+ */
+
 void Mapping::ConductIntermediateLC()
 {
     fMapLog << endl;
@@ -574,6 +597,12 @@ void Mapping::ConductIntermediateLC()
 
     }
 }
+
+/**
+ * @brief Conducts final raw-level loop closure optimization.
+ *
+ * @param num_iterations Number of optimization iterations to run.
+ */
 
 void Mapping::ConductFinalLC(int num_iterations)
 {
@@ -653,6 +682,11 @@ void Mapping::ConductFinalLC(int num_iterations)
 /*********************************************************
  * For original tree points per scan, find the corresponding tree points
  **********************************************************/
+/**
+ * @brief Assigns tree points (per-scan backups) to closest corresponding map trees.
+ *
+ * @param distance_threshold Maximum RMSE allowed between tree point and map tree.
+ */
 void Mapping::FindRawTreePointsPerMapTree(double distance_threshold)
 {
     fMapLog << "--------------------------------------------------" << endl;
@@ -737,6 +771,11 @@ void Mapping::FindRawTreePointsPerMapTree(double distance_threshold)
 /*********************************************************
  * For non ground raw points per scan, find the corresponding tree points
  **********************************************************/
+/**
+ * @brief Assigns non-ground points to the nearest valid map tree.
+ *
+ * @param distance_threshold Distance threshold to associate raw points with trees.
+ */
 void Mapping::FindRawPointsPerMapTree(double distance_threshold)
 {
     fMapLog << "--------------------------------------------------" << endl;
@@ -832,7 +871,11 @@ void Mapping::FindRawPointsPerMapTree(double distance_threshold)
     fMapLog << "\tTotal number of points and the ones that find map trees: " << num_total_points << " - " << num_found_points<<endl;
 }
 
-
+/**
+ * @brief Updates visibility and point associations for all map trees.
+ *
+ * This clears previous associations and repopulates them based on current observations.
+ */
 
 void Mapping::Update_Map_Tree_Obs()
 {
@@ -949,6 +992,17 @@ Input:
 Ouput:
     pCurrentIScan
 ********************************************************/
+/**
+ * @brief Main function to integrate multiple scans into a single integrated scan in local frame.
+ * 
+ * @details This function integrates scans stored in mvTempScan. It performs the following steps:
+ * - Derives local frame pose from odometry or trajectory
+ * - Backs up tree points per scan
+ * - Integrates tree and ground points into local map
+ * - Optionally performs optimization on integrated data
+ * - Updates trajectory and features
+ * - Broadcasts final integrated data
+ */
 void Mapping::integrateScan()
 {
     //Flag_Scan_Inter = true;
@@ -1053,6 +1107,12 @@ Ouput:
     vec_R/r_ini
     vec_R/r_ref
 ********************************************************/
+/**
+ * @brief Derive relative poses of each scan with respect to the local frame.
+ * 
+ * @details Sets pose of the first scan to origin and computes transformation for subsequent scans
+ * using odometry or trajectory. Updates r/R_lu_local for each scan.
+ */
 void Mapping::derivePoseLocal()
 {
      /*Definition of the local frame:
@@ -1152,6 +1212,11 @@ void Mapping::derivePoseLocal()
 /*
 Save tree points from each scan in the height range
 */
+/**
+ * @brief Backup tree points from each scan for later processing.
+ * 
+ * @details Stores 3D tree points per tree per scan while applying optional height filters.
+ */
 void Mapping::backupTreePoints()
 {
     for (int nScan = 0; nScan < mNumIntegrationScan; nScan++)
@@ -1194,6 +1259,12 @@ void Mapping::backupTreePoints()
     for tree with more than 10 points, keep it -> "tree with points in range: "
 3. check number of points for each tree, if its larger than MinNumTreePoints * numScans, save it
 */
+/**
+ * @brief Integrate tree features from all scans.
+ * 
+ * @details Performs tree matching across scans, removes noisy trees, computes tree centers,
+ * and updates valid trees based on point density.
+ */
 void Mapping::integrateTree()
 {
 #if 0
@@ -1274,6 +1345,10 @@ void Mapping::integrateTree()
     fMapLog << "Number of ini tree: " << numIniTree;
 #endif
 	std::cout << "running_iscan_index: " << running_iscan_index << std::endl;
+    std::cout << "Index: " << running_iscan_index
+          << " — Size of mvIntegratedTreeIdsVector: " << mvIntegratedTreeIdsVector.size()
+          << " — Size of mvIntegratedTreeIdsVector[running_iscan_index]: "
+          << mvIntegratedTreeIdsVector[running_iscan_index].size() << std::endl;
 	mvIntegratedTreeIds = mvIntegratedTreeIdsVector[running_iscan_index];
 	mvIntegratedTree = mvIntegratedTreeVector[running_iscan_index];
     running_iscan_index++;
@@ -1407,6 +1482,12 @@ void Mapping::integrateTree()
 }
 
 /* function to extract plane patches from the scans*/
+/**
+ * @brief Integrate planar ground features from all scans.
+ * 
+ * @details Transforms ground points to local frame, assigns them to a voxel grid, fits planar patches,
+ * and filters out weak planes. Updates mvPlaneParamLocal.
+ */
 void Mapping::integrateGroundPoints()
 {
     // compute ground points in lup and mapping
@@ -1558,6 +1639,14 @@ void Mapping::integrateGroundPoints()
  * Perform optimization for scan integration
  * Consider distortion in the computation.
  ********************************************************/
+/**
+ * @brief Optimize tree and ground features jointly using trajectory and cylinder model.
+ * 
+ * @param fix_traj_flag If true, fixes trajectory and only updates feature parameters
+ * 
+ * @details Uses Ceres solver to optimize scan poses and tree/ground features by minimizing residuals.
+ * Removes noisy observations and filters poor tree fits based on inlier ratio.
+ */
 void Mapping::optimizeIntegratedScan(bool fix_traj_flag)
 {
     double tree_std = mPara.iscanTreeStd;
@@ -2188,6 +2277,12 @@ void Mapping::optimizeIntegratedScan(bool fix_traj_flag)
  * For the invalid tree, 
  * Conduct the initialization of the T_lu_m for the first Iscan (change to meaningful location TODO)
  ********************************************************/
+/**
+ * @brief Update and merge invalid or outlier trees after scan integration.
+ * 
+ * @details Recomputes parameters for invalid trees and merges trees that are spatially close.
+ * Ensures robustness against repeated observations and duplicates.
+ */
 void Mapping::UpdateMergeTree()
 {
     //update the center of tree which is not valid
@@ -2266,6 +2361,13 @@ void Mapping::UpdateMergeTree()
  * Wrap up the info from the scan integration for local to mapping
  * Conduct the initialization of the T_lu_m for the first Iscan (change to meaningful location TODO)
  ********************************************************/
+/**
+ * @brief Broadcasts the result of scan integration to a new IntegratedScan instance.
+ *
+ * Sets initial pose information for the first Iscan based on whether the mapping is
+ * being initialized or is referencing a global map. Updates tree and ground points,
+ * performs downsampling, and computes transformations to local frames.
+ */
 void Mapping::broadcastIScan()
 {
     fMapLog << "Save integrated scan, " << flush;
@@ -2375,7 +2477,12 @@ void Mapping::broadcastIScan()
     }
 }
 
-
+/**
+ * @brief Localizes the current integrated scan using tree points with respect to map trees.
+ *
+ * Uses Iterative Closest Point (ICP) between tree centers in current scan and map trees
+ * to update transformation from local frame to mapping frame.
+ */
 void Mapping::Localize()
 {
     //current location in the mapping is pCurrentIScan->r_lu_m_ini 
@@ -2493,6 +2600,12 @@ void Mapping::Localize()
     //system("read -p 'Press Enter to continue...' var");
 }
 
+/**
+ * @brief Localizes the current integrated scan using only ground points (DTM-based).
+ *
+ * Similar to Localize(), but uses downsampled ground points and ICP for alignment.
+ * Only z-axis adjustment is performed for simplicity.
+ */
 void Mapping::LocalizeDTMOnly()
 {
     //current location in the mapping is pCurrentIScan->r_lu_m_ini 
@@ -2590,6 +2703,9 @@ void Mapping::LocalizeDTMOnly()
 /********************************************************
  * Clear information used in the computation.
  ********************************************************/
+/**
+ * @brief Clears all integration-related buffers and temporary scan data.
+ */
 void Mapping::resetIntegration()
 {
     vector<ScanInfo>().swap(mvTempScan);
@@ -2618,6 +2734,15 @@ void Mapping::resetIntegration()
 	// running_iscan_index++;
 }
 
+/**
+ * @brief Performs Iterative Closest Point (ICP) between map and current scan tree points.
+ *
+ * @param map_target List of target tree centers from map
+ * @param current_scan_source List of tree centers from current scan
+ * @param transformation Output rotation matrix
+ * @param translation Output translation vector
+ * @return true if ICP converged, false otherwise
+ */
 bool ICPforMapandCurrentScan(const vector<Eigen::Vector3d>& map_target,const vector<Eigen::Vector3d>& current_scan_source,
     Eigen::Matrix3d& transformation,Eigen::Vector3d& translation)
 {
@@ -2650,6 +2775,12 @@ bool ICPforMapandCurrentScan(const vector<Eigen::Vector3d>& map_target,const vec
     return true;
 }
 
+/**
+ * @brief Determines if loop closure is likely by checking spatial and temporal conditions.
+ *
+ * If sufficient time and spatial overlap occur, ICP is performed to confirm loop closure.
+ * @return true if loop closure is detected, false otherwise
+ */
 bool Mapping::DetermineLoopClosureIfExist(Eigen::Vector3d scan_location,int iscan_index, const vector<Eigen::Vector3d>& current_scan_tree_locations,
     Eigen::Matrix3d& transformation,Eigen::Vector3d& translation)
 {
@@ -2712,6 +2843,12 @@ bool Mapping::DetermineLoopClosureIfExist(Eigen::Vector3d scan_location,int isca
  * Refine T_lu_m_ini for current scan
  * Output: R/r_local_m_updated
  ********************************************************/
+/**
+ * @brief Computes transformation from current scan to global map using tree alignment.
+ *
+ * Performs matching of trees in current scan and map trees, followed by optimization of
+ * transformation using tree and ground points. Updates poses and cylinder parameters.
+ */
 void Mapping::computePoseToMap()
 {
     Flag_Pose_to_Map = true;
@@ -2868,6 +3005,13 @@ void Mapping::computePoseToMap()
  *  T_l_m_ini -> T_l_m_refined
  *  Updated: mvPairs,mpMapTree[].para
  ********************************************************/
+/**
+ * @brief Optimizes alignment between the current Iscan and map tree points.
+ *
+ * Uses Ceres optimization to refine local-to-map transformation and tree cylinder parameters
+ * by minimizing residuals between observed and model tree/ground points.
+ * @return true if optimization succeeds, false if insufficient tree matches are found
+ */
 bool Mapping::optimizeIScantoMap()
 {
     double tree_std = mPara.mapTreeStd;
@@ -3401,6 +3545,15 @@ bool Mapping::optimizeIScantoMap()
  * Input: mvPairs, mvValidTreeParamsUpdated
  * Output: mvPairs (updated)
  ********************************************************/
+/**
+ * @brief Validate and add matched integrated scan trees to the existing map trees.
+ * 
+ * This function goes through each matched pair in `mvPairs`, validates the tree match using residuals, 
+ * and adds the corresponding tree from the current integrated scan to the map tree if valid.
+ * 
+ * @details If the tree is added successfully, the tree status is updated in `vTreeStatus`. The valid pairs
+ * are retained in `mvPairs`.
+ */
 void Mapping::addIscanTreetoMapTree()
 {
     // go through all survived pairs
@@ -3430,6 +3583,17 @@ void Mapping::addIscanTreetoMapTree()
  *  1. tree features that are not corresponding to available trees
  *  2. all ground points
  ********************************************************/
+/**
+ * @brief Add features (trees and ground points) from the current integrated scan to the global map.
+ * 
+ * @details This function performs:
+ * 1. Matching of trees between integrated scan and map tree.
+ * 2. Adding unmatched trees as new map trees.
+ * 3. Downsampling and adding ground points to the global map.
+ * 
+ * Requires transformation T_l_m_updated to be computed prior to this step.
+ */
+
 void Mapping::addFeaturetoMap()
 {
     fMapLog << "--------------------------------------------------" << endl;
@@ -3499,6 +3663,15 @@ input:
 output:
     pairs (map id <-> scan tree id)
 ***********************************************/
+/**
+ * @brief Match trees of the current scan to a list of map tree centers using a distance threshold.
+ * 
+ * @param mapTree Vector of 3D centers for map trees.
+ * @param preScanTree Vector of 3D estimated centers from the scan.
+ * @param threshold Matching threshold (per tree).
+ * @param pairs Output matched pairs of (map tree index, scan tree index).
+ */
+
 void Mapping::matchTreeScantoMap(const vector<Eigen::Vector3d> *mapTree, const vector<Eigen::Vector3d> *preScanTree, const vector<double> *threshold, std::vector<pair<int, int>> &pairs)
 {
     // std::vector<int> pairMapTreeId;
@@ -3578,6 +3751,15 @@ input:
 output:
     pairs (map id <-> scan tree id)
 ***********************************************/
+/**
+ * @brief Match trees of the current scan to a list of map tree centers using a distance threshold.
+ * 
+ * @param mapTree Vector of 3D centers for map trees.
+ * @param preScanTree Vector of 3D estimated centers from the scan.
+ * @param threshold Matching threshold (per tree).
+ * @param pairs Output matched pairs of (map tree index, scan tree index).
+ */
+
 void Mapping::matchTreeScantoMap(const vector<Eigen::Vector3d> *ScanTree, const vector<double> *threshold, std::vector<pair<int, int>> &pairs)
 {
     // std::vector<int> pairMapTreeId;
@@ -3662,6 +3844,17 @@ output:
     validTreePair (map id <-> scan tree id)
     R,t: updated 2d similarity
 ***********************************************/
+/**
+ * @brief Estimate a 2D similarity transformation (rotation + translation) between matched scan and map tree centers.
+ * 
+ * @param mapTree Map tree center locations.
+ * @param scanTree Scan tree center locations.
+ * @param pairs Matched pairs of trees between map and scan.
+ * @param validTreePair Output flags indicating valid pairs used in estimation.
+ * @param R Output rotation matrix (3x3).
+ * @param t Output translation vector (3x1).
+ * @param initResult Optional initial 2D transform (cos, sin, tx, ty).
+ */
 void Mapping::compute2dTransScantoMap(const vector<Eigen::Vector3d> *mapTree, const vector<Eigen::Vector3d> *scanTree, const vector<pair<int, int>> *pairs, std::vector<bool> &validTreePair,
                                       Eigen::Matrix3d &R, Eigen::Vector3d &t, Eigen::Vector4d initResult = Eigen::Vector4d(1, 0, 0, 0))
 {
@@ -3771,6 +3964,13 @@ input:
     mvpIScans
 output: center of each tree, numPoint of each tree
 ***********************************************/
+/**
+ * @brief Compute the center and number of points for each tree in `mpMapTree`.
+ * 
+ * @details It averages all visible tree points to calculate the center and updates the number of points.
+ * If the tree is in ESTABLISHED status, it computes the surface ratio as well.
+ */
+
 void Mapping::computeMapTreeInfo()
 {
     for (int nMapT = 0; nMapT < mpMapTree.size(); nMapT++)
@@ -3806,6 +4006,16 @@ void Mapping::computeMapTreeInfo()
             mpMapTree[nMapT]->compute_surface_ratio();
     }
 }
+
+/**
+ * @brief Merge map trees that are spatially and structurally similar.
+ * 
+ * @return int The number of merged trees.
+ * 
+ * @details This function first checks proximity and residuals between tree point sets. If compatible,
+ * trees are merged via `AddMapTree()`. Two rounds are used — one for well-established trees and one
+ * for INIT or TBD trees.
+ */
 
 int Mapping::mergeMapTree()
 {
@@ -3917,6 +4127,14 @@ int Mapping::mergeMapTree()
     return num_merged_trees;
 }
 
+/**
+ * @brief Compute RMSE between tree points of a candidate and a reference map tree.
+ * 
+ * @param refId Reference tree ID in `mpMapTree`.
+ * @param candId Candidate tree ID in `mpMapTree`.
+ * @return double RMSE of point-to-tree surface distance.
+ */
+
 double Mapping::computeTreeToTreeResidual(int refId, int candId)
 {
     double dis_rmse = 0.0;
@@ -3944,6 +4162,15 @@ double Mapping::computeTreeToTreeResidual(int refId, int candId)
 }
 
 //the outlier ratio is calculated
+/**
+ * @brief Compute RMSE and outlier ratio between a candidate and reference tree.
+ * 
+ * @param refId Reference map tree index.
+ * @param candId Candidate map tree index.
+ * @param residual_distribution Output: vector containing ratio of [negative outliers, inliers, positive outliers].
+ * @return double RMSE of residual distances.
+ */
+
 double Mapping::computeTreeToTreeResidual(int refId, int candId, vector<double> &residual_distribution )
 {
     double threshold = 0.2;
@@ -3978,6 +4205,16 @@ double Mapping::computeTreeToTreeResidual(int refId, int candId, vector<double> 
     residual_distribution.push_back(double(num_positive_outlier)/double(mpMapTree[candId]->numPoint));
     return(dis_rmse);
 }
+
+/**
+ * @brief Perform long-term loop closure optimization using matched map and scan features.
+ * 
+ * @details Includes:
+ * - Feature extraction
+ * - Raw-level or structural optimization
+ * - Pose and map tree update
+ * - Export of trajectory and feature data
+ */
 
 void Mapping::LoopClosure()
 {
@@ -4058,6 +4295,13 @@ void Mapping::LoopClosure()
     //system("read -p 'Press Enter to continue...' var");
 }
 
+/**
+ * @brief Identify the range of Iscans to be refined during loop closure optimization.
+ * 
+ * @details It updates `iscan_index_start_`, `iscan_index_end_`, and `iscan_index_feature_start_`
+ * based on usage in active map trees.
+ */
+
 void Mapping::DeriveIndexLC()
 {
     // the end of the Iscan_end from previous LC
@@ -4090,6 +4334,16 @@ void Mapping::DeriveIndexLC()
             << " / " << iscan_index_end_ << endl;
     //system("read -p 'Press Enter to continue...' var");
 }
+
+/**
+ * @brief Compute normal vector and covariance matrix from a set of 3D points.
+ * 
+ * @param data Input point cloud as a vector of 3D points.
+ * @param parameters Output: Plane parameters (nx, ny, nz, cx, cy, cz).
+ * @param cov Output: Covariance matrix of the input points.
+ * @return true If normal computation succeeds.
+ * @return false If the input point set is too small (<3).
+ */
 
 bool ComputePointsNormal(const std::vector< Eigen::Vector3d>& data, std::vector<double> &parameters, Eigen::Matrix3d& cov)
 {
@@ -4145,6 +4399,15 @@ bool ComputePointsNormal(const std::vector< Eigen::Vector3d>& data, std::vector<
 	cov = covariance_matrix;
 	return true;
 }
+
+/**
+ * @brief Derives planar patches from ground points for loop closure.
+ *
+ * This function extracts reference ground points either from the global map or
+ * previous IScans and partitions them into grids. For each grid cell, it checks 
+ * if enough ground points from new IScans are present. If yes, it computes the 
+ * local planar parameters for later optimization during loop closure.
+ */
 
 void Mapping::DerivePlanarPatchLC()
 {
@@ -4349,6 +4612,20 @@ void Mapping::DerivePlanarPatchLC()
 
     fMapLog << "\tValid planar patch: " << point_index_per_grid.size() << " -> " << point_index_per_grid_.size() <<endl;
 }
+
+/**
+ * @brief Performs loop closure optimization using trees (cylinders) and planar patches.
+ *
+ * This method formulates a nonlinear optimization problem using the Ceres Solver,
+ * where the cost functions incorporate:
+ *  - Tree observations (cylindrical feature constraints)
+ *  - Ground plane observations
+ *  - Global tree priors
+ *  - Odometry constraints between IScans
+ *
+ * It updates the trajectory and tree parameters based on minimized residuals
+ * and records the before-after errors for analysis.
+ */
 
 void Mapping::OptimizeLC()
 {
@@ -4942,6 +5219,17 @@ void Mapping::OptimizeLC()
 // 	return key_index;
 // }
 
+/**
+ * @brief Computes the normal vector of a set of 3D points and evaluates planarity.
+ * 
+ * @param[in] data Vector of 3D points.
+ * @param[out] parameters Vector of 6 elements: normal vector (3) and centroid (3).
+ * @return Planarity score as per eigenvalue-based descriptor.
+ *
+ * This function calculates the covariance matrix and derives its eigenvectors 
+ * to estimate the normal direction and center. It returns the planarity measure
+ * using the square roots of the eigenvalues.
+ */
 double ComputePointsNormal(const std::vector< Eigen::Vector3d>& data, std::vector<double> &parameters)
 {
 	if (data.size() < 3)
@@ -4996,6 +5284,14 @@ double ComputePointsNormal(const std::vector< Eigen::Vector3d>& data, std::vecto
 	return planarity;
 }
 
+/**
+ * @brief Performs raw-level loop closure optimization using planar surface elements.
+ *
+ * This method voxelizes the environment using raw tree points, extracts dominant 
+ * planar patches (based on eigenvalue decomposition), and builds a Ceres optimization 
+ * problem that refines poses and plane parameters. It uses odometry constraints 
+ * and surface observations to optimize alignment across IScans.
+ */
 
 void Mapping::OptimizeRawLevelLCUsingSurfaceElements()
 {
@@ -5330,6 +5626,19 @@ void Mapping::OptimizeRawLevelLCUsingSurfaceElements()
 
 }
 
+/**
+ * @brief Writes a point cloud with optional metadata to a LAS file using PDAL.
+ *
+ * This function constructs a PDAL point table, fills in the point and attribute data
+ * (if provided), and writes the result to a `.las` file.
+ *
+ * @param ofname_cloud Output LAS file path.
+ * @param cloud Vector of 3D point positions.
+ * @param cloud_info Optional vector of metadata (e.g., intensity, classification, tree ID).
+ * @param x_min X offset for writing point cloud.
+ * @param y_min Y offset for writing point cloud.
+ * @param z_min Z offset for writing point cloud.
+ */
 
 void outputPointCloudByPDAL(std::string &ofname_cloud, const std::vector<Eigen::Vector3d> &cloud, const std::vector<CloudInfo> &cloud_info,
 	double x_min, double y_min, double z_min)
@@ -5421,6 +5730,15 @@ struct VectorSizeComparator {
     }
 };
 
+/**
+ * @brief Calculates the most dominant cylindrical portion (cluster) of each tree based on scan contributions.
+ *
+ * This function clusters tree points by scan ID and identifies the dominant cluster for each tree. Then,
+ * it fits a cylinder to that cluster to estimate radius and fitting error.
+ * The points are also exported as a LAS file for visualization or debugging.
+ *
+ * @return A vector of RadiusInfo structs, each containing radius, error, and success flag for each tree.
+ */
 
 std::vector<RadiusInfo> Mapping::CalculateMostPortionRadius()
 {
@@ -5552,6 +5870,17 @@ std::vector<RadiusInfo> Mapping::CalculateMostPortionRadius()
     return radius_info_results;
 }
 //pose for each scan is used for estimation
+/**
+ * @brief Performs loop closure optimization using raw scan-level data.
+ *
+ * This function builds a Ceres optimization problem with tree-cylinder and ground-plane constraints,
+ * as well as odometry constraints between consecutive scans. It updates trajectory poses and tree parameters
+ * after optimization, supporting fine-grained alignment in raw mapping mode.
+ *
+ * Optimization uses downsampling for computational efficiency, and optionally incorporates radius
+ * refinements from `CalculateMostPortionRadius()`.
+ */
+
 void Mapping::OptimizeRawLevelLC()
 {
     double tree_std = mPara.mapTreeStd;
@@ -6233,6 +6562,13 @@ void Mapping::OptimizeRawLevelLC()
     }//end of iteration
 }
 
+/**
+ * @brief Updates pose, ground, and tree point mappings for IScans after loop closure optimization.
+ *
+ * Depending on whether raw mapping is used, it either updates per-scan poses and remaps raw data
+ * or recomputes mapping-level features for each scan.
+ */
+
 void Mapping::UpdatePosePointsLC()
 {
     // TODO incase we are doing two LC together
@@ -6296,6 +6632,14 @@ void Mapping::UpdatePosePointsLC()
 
 }
 
+/**
+ * @brief Updates tree parameters for trees not included in the loop closure optimization.
+ *
+ * After optimization, this function updates all trees that were not part of the loop closure
+ * process by re-running `OptimizeLC()` on the remaining set.
+ * It also clears temporary planar patch and pose tracking variables.
+ */
+
 void Mapping::UpdateMapTreeLC()
 {
     //for trees that are included, the parameters are updated. But pose for all Iscans are updated, this will affect the trees that are not included
@@ -6339,6 +6683,16 @@ void Mapping::UpdateMapTreeLC()
 
 
 }
+
+/**
+ * @brief Exports optimized tree and ground points as a LAS file with metadata.
+ *
+ * This function outputs the tree features and ground planar patches (from both reference
+ * and current IScans) into a LAS file. Each point is annotated with scan origin,
+ * tree ID (or 0 for ground), and classification flag.
+ *
+ * @param outPass Output LAS file path.
+ */
 
 void Mapping::ExportFeatureLC(const std::string outPass)
 {
@@ -6460,6 +6814,15 @@ void Mapping::ExportFeatureLC(const std::string outPass)
     writer->execute(table);
 }
 
+/**
+ * @brief Exports updated poses (positions and angles) for each scan after loop closure.
+ *
+ * This function logs the refined trajectory for all scans included in loop closure.
+ * The format includes iscan ID, position, scan index, mapping flag, and rotation angles.
+ *
+ * @param outPass Output file path (TXT).
+ */
+
 void Mapping::ExportTrajectoryLC(const std::string outPass)
 {
 
@@ -6479,6 +6842,15 @@ void Mapping::ExportTrajectoryLC(const std::string outPass)
     }
     fTrajectoryLC.close();
 }
+
+/**
+ * @brief Exports reference (pre-optimized) poses for trajectory visualization.
+ *
+ * Similar to `ExportTrajectoryLC`, but outputs reference trajectory stored before optimization.
+ * Useful for comparison and debugging.
+ *
+ * @param outPass Output file path (TXT).
+ */
 
 void Mapping::ExportTrajectoryRefLC(const std::string outPass)
 {
@@ -6501,8 +6873,16 @@ void Mapping::ExportTrajectoryRefLC(const std::string outPass)
 }
 
 
-
 //load DTM, and form the mpMapGroundPoint and octreeGroundPointsFromMap
+/**
+ * @brief Load the global ground map from a file.
+ *
+ * This function reads the global ground map points from a specified file path,
+ * removes any global constant shifts, stores the points in `mpMapGroundPoint`,
+ * and constructs a PCL octree for spatial queries.
+ *
+ * @return true if the map was loaded successfully, false otherwise.
+ */
 bool Mapping::LoadGlobalGroundMap()
 {
     mpMapGroundPoint.reset(new pcl::PointCloud<PointType>);
@@ -6561,6 +6941,14 @@ bool Mapping::LoadGlobalGroundMap()
 
 
 //load map tree
+/**
+ * @brief Load the global tree map and add valid trees into the map.
+ *
+ * Uses the EOP octree to check spatial validity and maps tree locations to heights
+ * using the nearest ground point plus a constant height offset.
+ *
+ * @return true if the global tree map was loaded successfully, false otherwise.
+ */
 bool Mapping::LoadGlobalTreeMap()
 {
 
@@ -6680,6 +7068,13 @@ flag:
 bpoint:
     true:export ground point
 ***************************************************************/
+/**
+ * @brief Export all integrated features (trees and optionally ground points) into a TXT file.
+ *
+ * @param outPass Output file path
+ * @param flag Specifies which trajectory version to use (0 = init, 1 = refined, 2 = reference)
+ * @param bGroundPoint Flag indicating whether to export ground points
+ */
 void Mapping::exportIntegratedFeatures(const std::string outPass, int flag, bool bGroundPoint)
 {
     std::ofstream fPointFile(outPass, std::ifstream::out);
@@ -6776,6 +7171,14 @@ flag:
 bpoint:
     true:export ground point
 ***************************************************************/
+/**
+ * @brief Export features (tree and ground points) used in optimization.
+ *
+ * @param outPass Output file path
+ * @param flag Specifies which trajectory version to use (0 = init, 1 = refined, 2 = reference)
+ * @param bGroundPoint Flag indicating whether to export ground points
+ */
+
 void Mapping::exportIntegratedOptFeatures(const std::string outPass, int flag, bool bGroundPoint)
 {
     std::ofstream fPointFile(outPass, std::ifstream::out);
@@ -6859,6 +7262,12 @@ Export all points broadcast to map:
 bpoint:
     true:export ground point
 ***************************************************************/
+/**
+ * @brief Export features from the current IScan for broadcasting.
+ *
+ * @param outPass Output file path
+ * @param ds_flag Use downsampled ground points if true, else use raw points
+ */
 void Mapping::exportIscanFeatureBroadcast(const std::string outPass, int ds_flag)
 {
     std::ofstream fPointFile(outPass, std::ifstream::out);
@@ -6919,6 +7328,12 @@ void Mapping::exportTreeModel(const std::string outPass)
  *  Mapping frame
  *  Global frame (only valid if trajectory is available)
  **************************************************************/
+/**
+ * @brief Export tree axis lines for map trees in either the local mapping frame or global frame.
+ *
+ * @param outPass Output file path
+ * @param exportOption MAPPING_FRAME or GLOBAL_FRAME
+ */
 void Mapping::exportMapTreeModel(const std::string outPass, eExportOption exportOption )
 {
     std::ofstream fTreeFile(outPass, std::ifstream::out);
@@ -6953,6 +7368,12 @@ void Mapping::exportMapTreeModel(const std::string outPass, eExportOption export
 /***************************************************************
  * Export map tree parameters
  **************************************************************/
+/**
+ * @brief Export cylinder parameters of all map trees.
+ *
+ * @param outPass Output file path
+ * @param exportOption MAPPING_FRAME or GLOBAL_FRAME
+ */
 void Mapping::exportMapTreeParam(const std::string outPass, eExportOption exportOption)
 {
     std::ofstream fTreeFile(outPass, std::ifstream::out);
@@ -7002,6 +7423,11 @@ void Mapping::exportMapTreeParam(const std::string outPass, eExportOption export
  * Input:
  *  mpMapTree, mvpIScans[iscanId]->vTreePointMapping, mvpIScans[iscanId]->pGroundPointMappingDs
  **************************************************************/
+/**
+ * @brief Export all tree and ground feature points used in mapping.
+ *
+ * @param outPass Output file path
+ * @param exportOption MAPPING_FRAME or GLOBAL_FRAME*/
 
 void Mapping::exportFeatureMapping(const std::string outPass,  eExportOption exportOption)
 {
@@ -7089,7 +7515,14 @@ void Mapping::exportFeatureMapping(const std::string outPass,  eExportOption exp
     fPointFile.close();
 }
 
-
+/**
+ * @brief Export the mapping features (trees and ground) to a LAS file.
+ *
+ * Includes extra PDAL fields like GpsTime, EchoRange, OriginId, etc.
+ *
+ * @param outPass Output LAS file path
+ * @param exportOption MAPPING_FRAME or GLOBAL_FRAME
+ */
 void Mapping::ExportFeatureMappingLas(const std::string outPass, eExportOption exportOption)
 {
     PointTable table;
@@ -7277,6 +7710,17 @@ void Mapping::ExportFeatureMappingLas(const std::string outPass, eExportOption e
     writer->prepare(table);
     writer->execute(table);
 }
+
+/**
+ * @brief Exports backup tree point cloud features to a LAS file.
+ *
+ * This method exports raw tree points (used as backups) for each IScan, including metadata like
+ * time, echo range, scan IDs, and tree mapping information. Outputs are transformed into either
+ * mapping or global frame.
+ *
+ * @param outPass Path to output LAS file.
+ * @param exportOption Choose between MAPPING_FRAME or GLOBAL_FRAME for coordinate frame.
+ */
 
 void Mapping::ExportBackupTreeFeatureMappingLas(const std::string outPass, eExportOption exportOption)
 {
@@ -7487,7 +7931,14 @@ void Mapping::exportGroundMap(const std::string outPass, eExportOption exportOpt
     fPointFile.close();
 }
 
-
+/**
+ * @brief Compares estimated and reference global trajectories and exports both.
+ * 
+ * @param outPass Output file path.
+ * 
+ * Useful for debugging and evaluating alignment between SLAM-estimated
+ * trajectory and reference GNSS/IMU trajectory.
+ */
 void Mapping::exportTrajGlobalCheck(const std::string outPass)
 {
     std::ofstream fTrajGlobal(outPass, std::ifstream::out);
@@ -7524,6 +7975,17 @@ void Mapping::exportTrajGlobalCheck(const std::string outPass)
     }
     fTrajGlobal.close();
 }
+/**
+ * @brief Exports SLAM and GNSS trajectories to file and optionally accumulates into point clouds.
+ * 
+ * @param outPass Output file path.
+ * @param slam_trajectory Optional pointer to SLAM trajectory point cloud.
+ * @param gnss_trajectory Optional pointer to GNSS trajectory point cloud.
+ * 
+ * This function also applies offset alignment and stores the transformation matrix
+ * for further correction steps.
+ */
+
 void Mapping::exportTrajGlobal(const std::string outPass,pcl::PointCloud<pcl::PointXYZ>* slam_trajectory,pcl::PointCloud<pcl::PointXYZ>* gnss_trajectory)
 {
     std::ofstream fTrajGlobal(outPass, std::ifstream::out);
@@ -7592,6 +8054,12 @@ void Mapping::exportTrajGlobal(const std::string outPass,pcl::PointCloud<pcl::Po
 
 }
 
+/**
+ * @brief Apply ICP between SLAM and GNSS trajectories and update the global transformation.
+ *
+ * @param slam_trajectory SLAM trajectory point cloud
+ * @param gnss_trajectory GNSS trajectory point cloud
+ */
 void Mapping::UpdateMappingToGlobalTransformation(const pcl::PointCloud<pcl::PointXYZ>& slam_trajectory, const pcl::PointCloud<pcl::PointXYZ>& gnss_trajectory)
 {
 	Eigen::Matrix4f icp_result = Trajectory_ICP(slam_trajectory, gnss_trajectory);
@@ -7619,6 +8087,11 @@ void Mapping::UpdateMappingToGlobalTransformation(const pcl::PointCloud<pcl::Poi
  * no. 4 (2007): 1193-1197.
  * https://www.mathworks.com/matlabcentral/fileexchange/40098-tolgabirdal-averaging_quaternions
  **************************************************************/
+/**
+ * @brief Compute and return the average orientation across scans using quaternion averaging.
+ *
+ * @return Average orientation as a quaternion
+ */
 Eigen::Quaterniond Mapping::computeAverageLevelR()
 {
     // currently, equal weights
@@ -7647,6 +8120,11 @@ Eigen::Quaterniond Mapping::computeAverageLevelR()
 /***************************************************************
  * Compute the ref pose for each individual scan in the ISCAN
  **************************************************************/
+/**
+ * @brief Compute the reference trajectory for the current scan.
+ *
+ * Interpolates the GNSS trajectory (if available) to derive poses for each scan.
+ */
 void Mapping::computeRefTraj()
 {
     // int startIndex = mbInit ? 0 : 1;
@@ -7865,6 +8343,15 @@ void Mapping::exportIntegratedTrajectory(const std::string outPass)
 //     cout << "Numer of tree " << treeCount << endl;
 // }
 
+/**
+ * @brief Exports integrated tree and ground points using reference trajectory.
+ * 
+ * @param outPass Output file path to save exported points.
+ * 
+ * This function uses the reference trajectory from GNSS/IMU to convert all local scan
+ * points to the mapping frame and writes them into a file with metadata indicating whether 
+ * the point is a tree or ground point.
+ */
 void Mapping::exportIntegratedTreeRef(const std::string outPass)
 {
     fMapLog << outPass << endl;
@@ -7949,6 +8436,14 @@ void Mapping::exportIntegratedTreeRef(const std::string outPass)
     }
 }
 
+/**
+ * @brief Exports downsampled ground points for each grid to a file.
+ * 
+ * @param outPass Output path to save exported ground points.
+ * 
+ * Ground points are selected using grid-based filtering. Each line of the output
+ * contains point coordinates and the grid index to which it belongs.
+ */
 void Mapping::exportGroundPoints(const std::string outPass)
 {
     std::ofstream fGroundPoints(outPass, std::ifstream::out);
@@ -8015,6 +8510,9 @@ void Mapping::exportGroundPoints(const std::string outPass)
 //     fPointFile.close();
 // }
 
+/**
+ * @brief Count different types of trees in the current map (e.g., ESTABLISHED, SOLID).
+ */
 void Mapping::CountMapTreeType()
 {
     unordered_map<int, int> tree_type;
@@ -8027,6 +8525,11 @@ void Mapping::CountMapTreeType()
             << "  Established - " << tree_type[3] << "  Solid - " << tree_type[4] << "  Deactivated - " << tree_type[-2] << endl;
 }
 
+/**
+ * @brief Compute surface coverage ratio of a tree by binning angles.
+ *
+ * @param paraVer Whether to use current tree or candidate tree
+ */
 void MapTree::compute_surface_ratio(eParaVer paraVer)
 {
 
@@ -8084,7 +8587,9 @@ void MapTree::compute_surface_ratio(eParaVer paraVer)
     }
     surfaceRatio = double(countValidBin) / double(Num_Bin);
 }
-
+/**
+ * @brief Count the number of points currently assigned to this map tree.
+ */
 void MapTree::count_point()
 {
     numPoint = 0;
@@ -8095,7 +8600,9 @@ void MapTree::count_point()
         numPoint += pMap->mvpIScans[iscanId]->vTreePointMapping[treeId].size();
     }
 }
-
+/**
+ * @brief Compute and update the centroid of the tree from all its points.
+ */
 void MapTree::ComputeCentroid()
 {
     Eigen::Vector3d centeroid = Eigen::Vector3d::Zero();
@@ -8120,6 +8627,15 @@ void MapTree::ComputeCentroid()
 /*****************************************************************
  * Add Iscan tree to current map tree, update status of a tree
  * ***************************************************************/
+/**
+ * @brief Add a new candidate iscan tree into the current map tree.
+ *
+ * Updates tree parameters and status if the residual is within threshold.
+ *
+ * @param updatedPara New candidate cylinder parameters
+ * @param tree_info Scan and tree ID pair
+ * @return true if the addition is successful
+ */
 bool MapTree::add_iscan_tree(CylinderPara updatedPara, pair<int, int> tree_info)
 {
     // receive the new param, derive R_trans_candidate
@@ -8277,6 +8793,13 @@ std::vector<double> MapTree::CalculateIncomingPointsFitCylinderParameters()
 	return tree_parameters;
 }
 
+/**
+ * @brief Fits a cylinder model to all tree points in the current MapTree.
+ *
+ * Calculates the best-fit cylinder parameters for the aggregated points across scans. 
+ * Updates the `fit_para_` member if successful.
+ */
+
 void MapTree::CalculateAllPointsFitCylinderParameters()
 {
 	// update parameter
@@ -8324,6 +8847,12 @@ void MapTree::CalculateAllPointsFitCylinderParameters()
 /*****************************************************************
  * Update parameters, candidate Iscan trees, #of point, and R_trans
  * ***************************************************************/
+/**
+ * @brief Updates the MapTree with a newly matched IScan tree.
+ *
+ * Updates tree parameters, center, number of points, and transformation matrix.
+ * Optionally recomputes a global cylinder fit if enabled.
+ */
 void MapTree::update()
 {
     // update parameter
@@ -8368,6 +8897,13 @@ void MapTree::update()
 
 }
 
+/**
+ * @brief Computes residual error between a candidate iscan tree and the current MapTree model.
+ *
+ * @param cand_tree_info Pair containing scan and tree IDs.
+ * @param paraVer Which set of parameters to use for computing residuals (CANDIDATE, FIT_CYLINDER, etc.).
+ * @return Root Mean Square Error (RMSE) of point-to-cylinder distances.
+ */
 
 double MapTree::compute_iscan_tree_residual(pair<int, int> cand_tree_info, eParaVer paraVer)
 {
@@ -8387,6 +8923,13 @@ double MapTree::compute_iscan_tree_residual(pair<int, int> cand_tree_info, ePara
     dis_rmse = sqrt(dis_rmse / double(pMap->mvpIScans[iscanId]->vTreePointMapping[treeId].size()));
     return dis_rmse;
 }
+
+/**
+ * @brief Computes residual error for all points currently assigned to this map tree.
+ *
+ * @param paraVer Parameter set to use for residual computation.
+ * @return Root Mean Square Error (RMSE) of distances from points to current tree cylinder model.
+ */
 
 double MapTree::compute_map_tree_residual(eParaVer paraVer)
 {

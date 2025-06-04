@@ -2,6 +2,8 @@
 #include "../header/utility.h"
 #include <ceres/ceres.h>
 #include <ceres/rotation.h>
+#include <ceres/local_parameterization.h>
+
 // #include <eigen3/Eigen/Dense>
 // #include <pcl-1.10/pcl/point_cloud.h>
 // #include <pcl-1.10/pcl/point_types.h>

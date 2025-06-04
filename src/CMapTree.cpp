@@ -3,6 +3,18 @@
 /*****************************************************************
  * Compute distance from point p to the cylinder
  * ***************************************************************/
+
+/**
+ * @brief Computes the shortest distance from a 3D point to the surface of a cylinder.
+ *
+ * Internally, the function computes the perpendicular distance from point `p` to the cylinder axis,
+ * and then subtracts the cylinder radius to return the surface distance.
+ *
+ * @param[in] p The 3D point.
+ * @param[in] paraVer The parameter version to use (VALID, CANDIDATE, FIT_CYLINDER).
+ * @return The signed distance from the point to the cylinder surface.
+ */
+
 double MapTree::compute_dis(Eigen::Vector3d p, eParaVer paraVer)
 {
     if (paraVer == VALID)
@@ -18,6 +30,18 @@ double MapTree::compute_dis(Eigen::Vector3d p, eParaVer paraVer)
 /*****************************************************************
  * Compute horizontal angle from the point to the cylinder (apply R_trans)
  * ***************************************************************/
+
+ /**
+ * @brief Computes the horizontal angle from a 3D point to the cylinder axis after applying transformation.
+ *
+ * Projects the point onto the cylinder axis and computes the angle in the horizontal plane using atan2.
+ * Rotation matrix used depends on the parameter version selected.
+ *
+ * @param[in] p The 3D point.
+ * @param[in] paraVer The parameter version to use (VALID, CANDIDATE, FIT_CYLINDER).
+ * @return The horizontal angle in radians.
+ */
+
 double MapTree::compute_angle(Eigen::Vector3d p, eParaVer paraVer)
 {
     Eigen::Vector3d v_trans;
@@ -50,6 +74,16 @@ double MapTree::compute_angle(Eigen::Vector3d p, eParaVer paraVer)
  * Check if a parameter is valid or not 
  * Input: updatedPara
  * ***************************************************************/
+
+/**
+ * @brief Validates whether a given cylinder parameter is within acceptable limits.
+ *
+ * Checks normal vector components and radius for validity.
+ *
+ * @param[in] updatedPara The cylinder parameter to validate.
+ * @return true if valid, false otherwise.
+ */
+
 bool MapTree::is_valid_para(CylinderPara updatedPara)
 {
     if (abs(updatedPara.n(0)) > Max_Nx_Ny || abs(updatedPara.n(1)) > Max_Nx_Ny || updatedPara.r > Max_Radius)
@@ -63,6 +97,15 @@ bool MapTree::is_valid_para(CylinderPara updatedPara)
  * Based on the para, derive the rotation matrix to level the axis
  * para -> R_trans
  * ***************************************************************/
+/**
+ * @brief Derives the rotation matrix to align the cylinder axis with the vertical (Z) axis.
+ *
+ * Based on the cylinder's normal vector, computes roll and pitch angles to produce
+ * a transformation that levels the cylinder upright.
+ *
+ * @param[in] paraVer The parameter version to derive rotation for (VALID, CANDIDATE, FIT_CYLINDER).
+ */
+
 void MapTree::derive_trans_matrix(eParaVer paraVer)
 {
     if (paraVer == VALID)
@@ -99,6 +142,13 @@ void MapTree::derive_trans_matrix(eParaVer paraVer)
 /*****************************************************************
  * check the status of a tree fitted from Iscan to Map optimization
  * ***************************************************************/
+/**
+ * @brief Determines the status of a tree based on geometry and quality criteria.
+ *
+ * Uses heuristics based on number of points, radius, and surface ratio to
+ * classify the tree as ESTABLISHED, FITTED, SOLID, or TBD.
+ */
+
 void MapTree::is_established()
 {  
     // //if the status is already established, return
@@ -144,7 +194,9 @@ void MapTree::is_established()
         }
 }
 
-//reset the parameters based on the centroid
+/**
+ * @brief Resets cylinder parameters to default based on the centroid.
+ */
 void MapTree::ResetPara()
 {
     para.x = center;
@@ -153,6 +205,15 @@ void MapTree::ResetPara()
 }
 
 //once a new parameter is estimated for a map tree, if it's valid, update_flag-> true
+/**
+ * @brief Updates tree parameters if the new estimate is valid.
+ *
+ * Calls transformation matrix update as well.
+ *
+ * @param[in] updatedPara Newly estimated cylinder parameters.
+ * @return true if update was successful, false if parameters were invalid.
+ */
+
 bool MapTree::UpdateTreeParam(CylinderPara updatedPara)
 {
     //if the parameter not valid, return false
@@ -183,6 +244,11 @@ bool MapTree::UpdateTreeParam(CylinderPara updatedPara)
 //after vTreePointMapping is updated, update the attributes
 //if parameters are updated, compute surface ratio, centroid, type
 //otherwise only the centroid
+/**
+ * @brief Computes geometric attributes of the tree based on assigned points.
+ *
+ * Recomputes the centroid and, if parameters are stable, also updates surface ratio and status.
+ */
 void MapTree::ComputeAttributes()
 {
     if (status < 0)
@@ -198,6 +264,15 @@ void MapTree::ComputeAttributes()
     
 }
 
+/**
+ * @brief Merges another tree candidate into the current one.
+ *
+ * Transfers visibility info, updates centroid and point count, 
+ * and updates tracking indices.
+ *
+ * @param[in] p_cand_tree Pointer to the tree being merged.
+ */
+
 void MapTree::AddMapTree(MapTree* p_cand_tree)
 {
     //include the information from previous to current test
@@ -212,6 +287,12 @@ void MapTree::AddMapTree(MapTree* p_cand_tree)
     end_iscan_index_ = max(end_iscan_index_, p_cand_tree->end_iscan_index_);
     update_flag = true;
 }
+
+/**
+ * @brief Updates the tree's classification status when new observations are added.
+ *
+ * Simplified rule: if newly observed but under threshold, it’s TBD. Otherwise, FITTED.
+ */
 
 void MapTree::update_status_new_obs()
 {

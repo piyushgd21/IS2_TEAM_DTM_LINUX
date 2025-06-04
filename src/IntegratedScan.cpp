@@ -11,6 +11,15 @@
  *      2.tree points only
  *      3.ground points only
  * ***************************************************************/
+/**
+ * @brief Transform points from each individual scan to the start of the integrated scan (local frame).
+ * 
+ * This method interpolates poses between scans to transform both tree and ground points into the start
+ * coordinate frame of the integrated scan. Optionally downsamples the ground points using distance-based filtering.
+ * 
+ * @param downsample_distance Distance threshold for downsampling ground points.
+ * @param option Transformation mode: 1 = tree + ground, 2 = tree only, 3 = ground only.
+ */
 void IntegratedScan::transform2Start(double downsample_distance, int option)
 {
     if (option == 1 || option == 2)
@@ -91,6 +100,13 @@ void IntegratedScan::transform2Start(double downsample_distance, int option)
  * Output:
  *  v_r_mapping, v_R_mapping
  * ***************************************************************/
+/**
+ * @brief Compute global poses for each scan using the updated transformation to the global map.
+ * 
+ * The transformation is applied to all local poses to obtain their corresponding positions in the map frame.
+ * 
+ * @return Updates v_r_mapping and v_R_mapping.
+ */
 void IntegratedScan::computeIndividualPoseMapping()
 {
     v_r_mapping.clear();
@@ -114,6 +130,12 @@ void IntegratedScan::computeIndividualPoseMapping()
  * Compute the mapping coordinates of raw ground points using v_r/R_mapping
  * vGroundPointRaw -> vGroundPointMapping
  * ***************************************************************/
+/**
+ * @brief Transform raw ground points from local frame to global mapping coordinates.
+ * 
+ * Uses interpolated transformations to compute positions of each ground point in map coordinates.
+ * 
+ * @return Updates vGroundPointMapping.*/
 void IntegratedScan::computeRawGroundPointToMapping()
 {
     vector<PointType>().swap(vGroundPointMapping);
@@ -146,6 +168,13 @@ void IntegratedScan::computeRawGroundPointToMapping()
  * Compute the mapping coordinates of raw tree points using v_r/R_mapping
  * vTreePointRaw -> vTreePointMapping
  * ***************************************************************/
+/**
+ * @brief Transform raw tree points from local frame to global mapping coordinates.
+ * 
+ * Uses interpolated poses to project all raw tree points into map frame.
+ * 
+ * @return Updates vTreePointMapping.
+ */
 void IntegratedScan::computeRawTreePointToMapping()
 {
     vector<vector<PointType>>().swap(vTreePointMapping);
@@ -182,6 +211,13 @@ void IntegratedScan::computeRawTreePointToMapping()
  * Compute the mapping coordinates of raw tree points using v_r/R_mapping
  * vTreePointRaw -> vTreePointMapping
  * ***************************************************************/
+/**
+ * @brief Transform raw multi-scan tree points into global mapping frame.
+ * 
+ * Supports transformation of per-scan, per-tree grouped raw data structure.
+ * 
+ * @return Updates raw_tree_points_mapping.
+ */
 void IntegratedScan::computeBackupTreePointToMapping()
 {
     vector<vector<vector<PointType>>>().swap(raw_tree_points_mapping);
@@ -225,6 +261,13 @@ void IntegratedScan::computeBackupTreePointToMapping()
  * Compute the mapping coordinates of raw tree points using v_r/R_mapping
  * raw_non_ground_points -> raw_non_ground_points_mapping
  * ***************************************************************/
+/**
+ * @brief Transform non-ground raw points from all scans to mapping coordinates.
+ * 
+ * Applies interpolation of poses for each non-ground point.
+ * 
+ * @return Updates raw_non_ground_points_mapping.
+ */
 void IntegratedScan::computeNonGroundPointsToMapping()
 {
     vector<vector<PointType>>().swap(raw_non_ground_points_mapping);
@@ -265,6 +308,12 @@ void IntegratedScan::computeNonGroundPointsToMapping()
  *  2. T_local_m_updated
  * pGroundPointLocalDs -> pGroundPointMappingDs
  * ***************************************************************/
+/**
+ * @brief Transform downsampled ground points from local frame to map coordinates.
+ * 
+ * @param flag INIT or REFINED transformation.
+ * @return Updates pGroundPointMappingDs.
+ */
 void IntegratedScan::computeMapGroundPoints(const eUpdateFlag flag)
 {
     pGroundPointMappingDs.reset(new pcl::PointCloud<PointType>);
@@ -295,6 +344,12 @@ void IntegratedScan::computeMapGroundPoints(const eUpdateFlag flag)
  *  2. T_local_m_updated
  * vTreePointLocal -> vTreePointMapping
  * ***************************************************************/
+/**
+ * @brief Transform tree points from local frame to global mapping frame.
+ * 
+ * @param flag INIT or REFINED transformation.
+ * @return Updates vTreePointMapping.
+ */
 void IntegratedScan::computeMapTreePoints(const eUpdateFlag flag)
 {
     vTreePointMapping.clear();
@@ -336,6 +391,12 @@ void IntegratedScan::computeMapTreePoints(const eUpdateFlag flag)
  * Ouput:
  *  vTreeParamMapping
  * ***************************************************************/
+/**
+ * @brief Transform cylinder tree parameters from local to global mapping frame.
+ * 
+ * @param flag INIT or REFINED transformation.
+ * @return Updates vTreeParamMapping.
+ */
 void IntegratedScan::computeMapTreeParameter(const eUpdateFlag flag)
 {
     vector<CylinderPara> vTreePara;
@@ -370,6 +431,13 @@ void IntegratedScan::computeMapTreeParameter(const eUpdateFlag flag)
  * Output:
  *  vTreeParamLocal
  * **************************************************************/
+/**
+ * @brief Update local tree parameters (center and direction) for trees not involved in integration.
+ * 
+ * Calculates average center and assumes Z-up axis.
+ * 
+ * @return Updates vTreeParamLocal.
+ */
 void IntegratedScan::updateTreeParamLocal()
 {
     for (int nTree = 0; nTree < vTreePointRaw.size(); nTree++)
@@ -404,6 +472,10 @@ void IntegratedScan::updateTreeParamLocal()
  * Ouput:
  *  vTreeParamMapping
  * ***************************************************************/
+/**
+ * @brief Print detailed statistics on tree and ground points across all representations (raw, local, mapped).
+ * 
+ * Also prints total number of scans and their contained point counts.*/
 void IntegratedScan::show_number_PointType()
 {
     // tree points
@@ -483,6 +555,13 @@ void IntegratedScan::show_number_PointType()
  * Ouput:
  *  vTreePointRaw
  * ***************************************************************/
+/**
+ * @brief Reconstruct vTreePointRaw from matched tree IDs and raw tree point buffer.
+ * 
+ * Consolidates tree point data from all scans using map-wide tree index matching.
+ * 
+ * @return Updates vTreePointRaw and triggers computeRawTreePointToMapping().
+ */
 void IntegratedScan::update_vTreePointRaw()
 {
     vector<vector<PointType>>().swap( vTreePointRaw);
