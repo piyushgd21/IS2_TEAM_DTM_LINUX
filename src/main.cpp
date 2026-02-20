@@ -413,6 +413,8 @@ int main(int argc, char **argv)
 		int result=execute(batch_input_folders[i], batch_setting_file_names[i], output_folder_path, exe_name);
 
 		std::cout << "finished: " << output_folder_path << " result:"<< result<<std::endl;
+		std::cout << "Press Enter to exit...";
+		std::cin.get();  // waits for Enter
 	}
 	return 1; 
 
