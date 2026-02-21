@@ -38,7 +38,7 @@ int execute(std::string folder_path,std::string setting_file_name,std::string ou
     // Read the SLAM settings file (copied to output for traceability)
 	std::string paraPath = input_folder+setting_file_name;
 	std::string copy_to_file = output_folder + setting_file_name;
-	CopyFileW(wstring(paraPath.begin(), paraPath.end()).c_str(), wstring(copy_to_file.begin(), copy_to_file.end()).c_str(),false); 
+	boost::filesystem::copy_file(paraPath, copy_to_file, boost::filesystem::copy_option::overwrite_if_exists);
     SettingPara sPara;
     loadSettingPara(paraPath, sPara); // Load configuration into sPara object
     cout << sPara.nChannel << "\t" << sPara.treeAngleThreshold << "\t" << sPara.groundBufferTree << endl;

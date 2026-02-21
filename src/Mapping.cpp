@@ -5380,7 +5380,8 @@ void Mapping::OptimizeRawLevelLCUsingSurfaceElements()
         surface_keys.push_back(item.first);
         surface_element_number++;
 	}
-	voxel_key_to_inner_points_mapping.swap(std::map<uint64_t, std::vector<Eigen::Vector3d>>());
+	std::map<uint64_t, std::vector<Eigen::Vector3d>> empty_map;
+	voxel_key_to_inner_points_mapping.swap(empty_map);
 
     double surface_std = mPara.mapGroundStd;
 

@@ -21,7 +21,7 @@ template <typename T>
 T ChangeResidual(T prev_residual)
 {
 	T current_residual;
-	if (!ceres::signbit(prev_residual))
+	if (!std::signbit(prev_residual))
 	{
 		current_residual = prev_residual;
 	}
